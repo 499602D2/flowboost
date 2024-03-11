@@ -1,0 +1,32 @@
+[session]
+name = ""
+data_dir = ""
+archival_dir = ""
+dataframe_format = "polars"
+created_at = ""
+
+[template]
+path = ""
+additional_files = []
+
+[optimizer]
+type = "Ax"
+offload_acquisition = false # Acquisition offloading in cluster env
+
+[scheduler]
+type = ""     # Manager-implementing class name
+job_limit = 1 # Also node reservation limit (TODO not always)
+
+[scheduler.OpenFOAM]
+# Can also be provided in your template case's Allrun script
+# args = { pe = "orte 36", M = "user@example.com", m = "base" }
+# setup = [
+#     "module load gnu openmpi",
+#     "source /nfs/prg/OpenFOAM/OpenFOAM-dev/etc/bashrc",
+# ]
+
+[scheduler.acquisition]
+# This is a required configuration if you desire offloaded acquisition
+# args = { q = "gpgpu", M = "user@example.com", m = "base" }
+# setup = ["source /nfs/prg/anaconda3/bin/activate", "conda activate py3.10"]
+# torch_device = ""

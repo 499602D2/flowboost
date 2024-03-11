@@ -1,0 +1,50 @@
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "flowboost"
+version = "0.1.0"
+description = "Multi-objective optimization framework for OpenFOAM"
+license = "Apache-2.0"
+authors = [" <>"]
+maintainers = [" <>"]
+readme = "README.md"
+repository = "https://github.com/499602D2/flowboost"
+keywords = [
+    "OpenFOAM",
+    "Bayesian optimization",
+    "Multi-objective",
+    "HPC",
+    "Cluster computing",
+]
+classifiers = ["Topic :: Scientific/Engineering"]
+
+[tool.poetry.dependencies]
+"python" = "^3.10"
+"ax-platform" = "*"
+"pandas" = "*"
+"polars" = { version = "*", optional = false }
+"polars-lts-cpu" = { version = "*", optional = true }
+"psutil" = "*"
+"pyarrow" = "*"
+"scikit-learn" = "*"
+"tomlkit" = "*"
+coloredlogs = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8"
+pytest-cov = "*"
+
+[tool.poetry.scripts]
+generate-requirements = "flowboost.scripts.requirements:generate"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -v"
+testpaths = ["tests"]
+markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
