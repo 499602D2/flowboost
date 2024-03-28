@@ -38,6 +38,7 @@ def test_dictionary_link(foam_in_env, tutorial_case):
     # Test Dictionary Links
     link = Dictionary.link("constant/cloudProperties")
     reader = link.reader(tutorial_case.path)
+    assert reader
     assert reader.entry("type") == "sprayCloud"
 
     # Test case-based link access

@@ -153,10 +153,11 @@ class Case:
     @staticmethod
     def from_tutorial(tutorial: str, new_case_dir: Path | str) -> "Case":
         """
-        Creates a new Case directory as `clone_to`, from an existing
-        OpenFOAM tutorial. If new_case_dir exists, the clone will be skipped.
+        Clones a new Case directory from an existing OpenFOAM tutorial.
+        If new_case_dir exists, the clone will be skipped.
 
-        For additional information, see the OpenFOAM documentation for `foamCloneCase`.
+        For additional information, see the OpenFOAM documentation for
+        `foamCloneCase`.
 
         Args:
             tutorial (str): Tutorial path, relative to /tutorials folder.
@@ -164,15 +165,8 @@ class Case:
             new_case_dir (Path | str): Path for the new case directory that \
                 will be created. E.g. `my/path/aachenBomb_tutorial`.
         """
-        if not FOAM.in_env():
-            raise ValueError("OpenFOAM not sourced")
-
-        tutorial_case = FOAM.tutorials() / tutorial
-
-        if not tutorial_case.exists():
-            raise FileNotFoundError(
-                f"Tutorial case path does not exist: '{tutorial_case}'"
-            )
+        # Get path
+        tutorial_path = FOAM.tutorial(relative_path=tutorial)
 
         new_case_dir = Path(new_case_dir)
         if new_case_dir.exists():
@@ -181,11 +175,11 @@ class Case:
             )
             return Case(path=new_case_dir)
 
-        cmd = ["foamCloneCase", tutorial_case, new_case_dir]
+        cmd = ["foamCloneCase", tutorial_path, new_case_dir]
         run_command(cmd)
 
         new_case = Case(path=new_case_dir)
-        new_case._based_on_case = tutorial_case
+        new_case._based_on_case = tutorial_path
         return new_case
 
     def clean(self, ask_for_confirmation: bool = True):

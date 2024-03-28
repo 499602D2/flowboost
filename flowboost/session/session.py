@@ -5,7 +5,7 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 from flowboost.config import config
 from flowboost.manager.manager import JobV2, Manager
@@ -342,7 +342,10 @@ class Session:
             self.job_manager.submit_case(case)
 
     def attach_template_case(
-        self, case: Case, add_files: list[str] = [], move_to_session_dir: bool = False
+        self,
+        case: Union[Case, Path],
+        add_files: list[str] = [],
+        move_to_session_dir: bool = False,
     ):
         """
         Attaches a template case to the session, which new simulations will
@@ -351,7 +354,7 @@ class Session:
         By default, the case is not copied or otherwise altered to reduce the \
         potential for confusion. If you specify `move_dir_to_session`, the \
         case directory will be moved to the session directory: even then, the \
-        case will never be altered, only copied.
+        case will never be altered, only cloned.
 
         Optionally, you can specify additional files and directories for the \
         `foamCloneCase` command to copy: this may include a non-0 starting \
@@ -359,13 +362,16 @@ class Session:
         used.
 
         Args:
-            case (Case): An OpenFOAM case to use as a template.
+            case (Case | Path): An OpenFOAM case to use as a template.
             add_files (list[str]): List of file-/directory-names to \
                 include whenever the template case is used to derive new \
                 simulations.
             move_to_session_dir (bool, optional): Move the entire template \
                 case directory to the session data_dir.
         """
+        if isinstance(case, Path):
+            case = Case(case)
+
         if move_to_session_dir:
             new_path = self.data_dir / case.name
             shutil.move(case.path, new_path)
