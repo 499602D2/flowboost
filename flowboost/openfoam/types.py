@@ -7,26 +7,59 @@ import numpy as np
 
 class FOAMType:
     @staticmethod
-    def parse(data: str):
+    def parse(data: str) -> tuple[Optional[str], Optional[str], Any]:
+        """
+        Parses a line of FoamDictionary output for a terminating dictionary
+        value entry, returning a (value, dimension) tuple.
+
+        Args:
+            data (str): _description_
+
+        Returns:
+            tuple[str, str, Any]: The read (name, dimension, value) of the entry.
+        """
+        # Use regex to search for dimension set
+        dimension_regex = re.compile(r"\[.*?\]")
+        dimension_match = dimension_regex.search(data)
+
+        # Initialize variables
+        # https://doc.cfd.direct/openfoam/user-guide-v11/basic-file-format
+        name, dimension, value = None, None, None
+
+        if dimension_match:
+            dimension = dimension_match.group(0)
+            before_dimension, _, after_dimension = data.partition(dimension)
+            name = before_dimension.strip()
+            value = after_dimension.strip()
+        else:
+            # Handle case without dimension
+            parts = data.split()
+
+            if len(parts) == 2:
+                name, value = parts[0], parts[1]
+            elif len(parts) == 1:
+                # If there's only one part, consider it as value for simplicity
+                value = parts[0]
+            else:
+                raise ValueError(f"Parsing error: parts={parts}, len={len(parts)}")
+
         # Attempt to directly return the parsed scalar types
-        scalar_value = FOAMType.try_parse_scalar(data)
+        scalar_value = FOAMType.try_parse_scalar(value)
 
-        if scalar_value is not None:
-            return scalar_value
-
-        # TODO test if data is dimensioned
+        if scalar_value:
+            return name, dimension, scalar_value
 
         # Handle non-scalar types with a separate method
-        if data.startswith('(') and data.endswith(')'):
-            return FOAMType.parse_vector_space(data)
+        if data.startswith("(") and data.endswith(")"):
+            return name, dimension, FOAMType.parse_vector_space(data)
 
         # Attempt to parse as boolean
         boolean_value = Switch.from_string(data).value
         if boolean_value is not None:
-            return boolean_value
+            return (name, dimension, boolean_value)
 
-        # If all else fails, return the data as is
-        return data
+        # If all else fails, return the data as is (as value)
+        return None, None, data
 
     @staticmethod
     def to_FOAM(data: Any) -> str:
@@ -35,12 +68,16 @@ class FOAMType:
             if shape == (3,):  # Vector
                 return f"( {d[0]} {d[1]} {d[2]} )"
             elif shape == (3, 3):  # Tensor
-                flattened = d.flatten() if isinstance(d, np.ndarray) else [
-                    num for row in d for num in row]
+                flattened = (
+                    d.flatten()
+                    if isinstance(d, np.ndarray)
+                    else [num for row in d for num in row]
+                )
                 return "( " + " ".join(str(num) for num in flattened) + " )"
 
-            flattened = np.array(d).flatten() if not isinstance(
-                d, np.ndarray) else d.flatten()
+            flattened = (
+                np.array(d).flatten() if not isinstance(d, np.ndarray) else d.flatten()
+            )
             return "( " + " ".join(str(num) for num in flattened) + " )"
 
         # Direct conversion for simple types
@@ -56,8 +93,11 @@ class FOAMType:
             shape = data.shape
         elif isinstance(data, (list, tuple)) and len(data) > 0:
             # Assuming all elements in list/tuple are of the same type and shape
-            shape = (len(data), len(data[0])) if isinstance(
-                data[0], (list, tuple)) else (len(data),)
+            shape = (
+                (len(data), len(data[0]))
+                if isinstance(data[0], (list, tuple))
+                else (len(data),)
+            )
         else:
             raise TypeError("Unsupported type for FOAMType conversion.")
 
@@ -109,7 +149,7 @@ class FOAMType:
         if s.isdigit() or (s[0] in "+-" and s[1:].isdigit()):
             return int(s)
 
-        if '.' in s or 'e' in s or 'E' in s:
+        if "." in s or "e" in s or "E" in s:
             try:
                 # Directly return if float conversion succeeds.
                 return float(s)
@@ -123,17 +163,16 @@ class FOAMType:
     @staticmethod
     def parse_vector_space(data: str, parse_subdicts=True):
         # Clean up and prepare for parsing
-        data = data.strip().strip('()').strip()
+        data = data.strip().strip("()").strip()
 
         # Check for sub-dictionaries
-        if '{' in data:
+        if "{" in data:
             if parse_subdicts:
                 return [FOAMType.parse_subdict(data)]
             else:
                 return [data]  # Return as string if not parsing
 
-        numbers = [FOAMType.try_parse_scalar(
-            num) for num in re.split(r'\s+', data)]
+        numbers = [FOAMType.try_parse_scalar(num) for num in re.split(r"\s+", data)]
 
         if len(numbers) == 1:
             return numbers[0]  # Spherical Tensor
@@ -151,8 +190,8 @@ class FOAMType:
     def parse_subdict(data: str) -> dict:
         # Very rudimentary parser for sub-dictionaries
         # Assumes well-formed input because I'm not writing a full parser here
-        subdict_str = data.strip('{}').strip()
-        entries = re.split(r';\s*', subdict_str)
+        subdict_str = data.strip("{}").strip()
+        entries = re.split(r";\s*", subdict_str)
         parsed_dict = {}
         for entry in entries:
             if entry:  # Skip empty strings
@@ -160,9 +199,8 @@ class FOAMType:
                 key, value = key.strip(), value.strip()
 
                 # Attempt to parse value as vector if it looks like one
-                if value.startswith('(') and value.endswith(')'):
-                    parsed_dict[key] = FOAMType.parse_vector_space(
-                        value, False)
+                if value.startswith("(") and value.endswith(")"):
+                    parsed_dict[key] = FOAMType.parse_vector_space(value, False)
                 else:
                     # Try to convert numerical values, fall back to string
                     if value.isdigit():
