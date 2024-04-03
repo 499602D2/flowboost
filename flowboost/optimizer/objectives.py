@@ -335,7 +335,10 @@ class AggregateObjective:
     def aggregate_outputs(self, processed_outputs: list[tuple]) -> list[float]:
         """Aggregate the post-processed tuple outputs into scalar values."""
         aggregated_values = [
-            sum(output * weight for output, weight in zip(obj_outputs, self.weights))
+            sum(
+                float(output * weight)
+                for output, weight in zip(obj_outputs, self.weights)
+            )
             for obj_outputs in processed_outputs
         ]
         return aggregated_values
@@ -414,4 +417,4 @@ class ScikitNormalizationStep:
         self.normalizer = scikit_normalizer
 
     def evaluate(self, input: list) -> list:
-        return list(self.normalizer.fit_transform(np.ndarray(input)))
+        return list(self.normalizer.fit_transform(np.array(input).reshape(-1, 1)))
