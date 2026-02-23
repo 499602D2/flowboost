@@ -863,20 +863,43 @@ class Session:
             display_cases = case_scores[:min(n, len(case_scores))]
             header = f"=== Top {len(display_cases)} Designs (by '{objective.name}') ==="
 
+        other_objectives = [obj for obj in self.backend.objectives if obj.name != objective.name]
+
+        COL_RANK = 6
+        COL_NAME = 35
+        COL_OBJ = 18
+        COL_PARAMS = 30
+        n_obj_cols = 1 + len(other_objectives)
+
         print(f"\n{header}")
-        print(f"{'Rank':<6} {'Case Name':<35} {objective.name:<18} {'Parameters'}")
-        print("-" * 100)
+        obj_header = f"{objective.name:<{COL_OBJ}}" + "".join(f"{obj.name:<{COL_OBJ}}" for obj in other_objectives)
+        print(f"{'Rank':<{COL_RANK}} {'Case Name':<{COL_NAME}} {obj_header} {'Parameters'}")
+        print("-" * (COL_RANK + COL_NAME + COL_OBJ * n_obj_cols + COL_PARAMS))
 
         for rank, (case, proc_value, raw_value, gen_index) in enumerate(display_cases, 1):
-            # Get parameter values from metadata
-            params = []
             metadata = case.read_metadata()
+
+            # Get parameter values
+            params = []
             if metadata and "optimizer-suggestion" in metadata:
                 opt_sugg = metadata["optimizer-suggestion"]
                 params = [f"{k}={v.get('value', 'N/A'):.3f}" for k, v in opt_sugg.items()]
-
             params_str = ", ".join(params) if params else "N/A"
-            print(f"{rank:<6} {case.name:<35} {raw_value:<18.6f} {params_str}")
+
+            # Primary objective raw value
+            obj_values_str = f"{raw_value:<18.6f}"
+
+            # Other objectives raw values
+            if metadata:
+                raw_all = metadata.get("objective-values-raw", {})
+                for obj in other_objectives:
+                    other_val = raw_all.get(obj.name)
+                    if other_val is not None:
+                        obj_values_str += f"{other_val:<18.6f}"
+                    else:
+                        obj_values_str += f"{'N/A':<18}"
+
+            print(f"{rank:<6} {case.name:<35} {obj_values_str} {params_str}")
 
         print()
 
