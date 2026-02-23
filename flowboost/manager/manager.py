@@ -11,7 +11,7 @@ from typing import Any, Optional
 from flowboost.openfoam.case import Case, Status
 from flowboost.utilities.time import td_format
 
-SUPPORTED_SCHEDULERS = ("Local", "SGE")
+SUPPORTED_SCHEDULERS = ("Local", "SGE", "Slurm")
 
 
 class Manager(ABC):
@@ -138,6 +138,7 @@ class Manager(ABC):
         """
         from flowboost.manager.interfaces.local import Local
         from flowboost.manager.interfaces.sge import SGE
+        from flowboost.manager.interfaces.slurm import Slurm
 
         match scheduler.lower():
             case "local":
@@ -145,7 +146,7 @@ class Manager(ABC):
             case "sge":
                 manager = SGE(wdir=wdir, job_limit=job_limit)
             case "slurm":
-                raise NotImplementedError("Slurm manager not implemented")
+                manager = Slurm(wdir=wdir, job_limit=job_limit)
             case _:
                 raise NotImplementedError(
                     f"Scheduler '{scheduler}' not in {SUPPORTED_SCHEDULERS}"
