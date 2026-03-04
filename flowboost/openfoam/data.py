@@ -261,7 +261,7 @@ class Data:
             for i, line in enumerate(f):
                 if not line.startswith(comment):
                     if line and prev_line:
-                        return prev_line.strip(comment).split(delim)
+                        return [col.strip() for col in prev_line.strip(comment).split(delim)]
                     else:
                         return None
 
