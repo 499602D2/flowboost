@@ -295,7 +295,7 @@ class Manager(ABC):
             logging.error(
                 f"Source directory does not exist, cannot move: {job.wdir}"
             )
-            return
+            return False
 
         # Path(dest).mkdir(parents=True, exist_ok=True)
 
