@@ -7,6 +7,7 @@ from hashlib import blake2b
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Union, Literal
 from uuid import uuid4
+import shutil
 
 import tomlkit
 
@@ -170,7 +171,6 @@ class Case:
             FileExistsError: If destination already exists
             FileNotFoundError: If source does not exist
         """
-        import shutil
 
         source_path = Path(source).resolve().absolute()
         dest_path = Path(destination).resolve().absolute()
@@ -235,9 +235,7 @@ class Case:
             return Case(path=new_case_dir)
 
         if method == "copy":
-            # Direct copy using cp -r
-            cmd = ["cp", "-r", str(tutorial_path), str(new_case_dir)]
-            run_command(cmd)
+            shutil.copytree(str(tutorial_path), str(new_case_dir))
         elif method == "foamCloneCase":
             cmd = ["foamCloneCase", tutorial_path, new_case_dir]
             run_command(cmd)
