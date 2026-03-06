@@ -11,7 +11,7 @@ from typing import Any, Optional
 from flowboost.openfoam.case import Case, Status
 from flowboost.utilities.time import td_format
 
-SUPPORTED_SCHEDULERS = ("Local", "SGE")
+SUPPORTED_SCHEDULERS = ("Local", "SGE", "Slurm")
 
 
 class Manager(ABC):
@@ -138,6 +138,7 @@ class Manager(ABC):
         """
         from flowboost.manager.interfaces.local import Local
         from flowboost.manager.interfaces.sge import SGE
+        from flowboost.manager.interfaces.slurm import Slurm
 
         match scheduler.lower():
             case "local":
@@ -145,7 +146,7 @@ class Manager(ABC):
             case "sge":
                 manager = SGE(wdir=wdir, job_limit=job_limit)
             case "slurm":
-                raise NotImplementedError("Slurm manager not implemented")
+                manager = Slurm(wdir=wdir, job_limit=job_limit)
             case _:
                 raise NotImplementedError(
                     f"Scheduler '{scheduler}' not in {SUPPORTED_SCHEDULERS}"
@@ -156,7 +157,7 @@ class Manager(ABC):
     def free_slots(self) -> int:
         return self.job_limit - len(self._get_running_jobs())
 
-    def submit_case(self, case: Case, script_args: dict[str, Any] = {}) -> bool:
+    def submit_case(self, case: Case, script_args: dict[str, Any] = {}, script_name: Optional[str] = None) -> bool:
         """
         Public interface for submitting a Case to the execution environment.
 
@@ -164,6 +165,7 @@ class Manager(ABC):
             case (Case): Case to submit
             script_args (dict[str, Any], optional): Additional arguments to \
                 pass to the Allrun script. Defaults to {}.
+            script_name (Optional[str], optional): Name of the script to submit. Defaults to None.
 
         Raises:
             FileNotFoundError: If Allrun-script is not found
@@ -172,7 +174,7 @@ class Manager(ABC):
         Returns:
             bool: Submission success status
         """
-        script = case.submission_script()
+        script = case.submission_script(script_name=script_name)
         if not script:
             raise FileNotFoundError(f"Allrun script not found: {case}")
 
@@ -287,6 +289,12 @@ class Manager(ABC):
     def move_data_for_job(self, job: "JobV2", dest: Path) -> bool:
         if not self._job_has_finished(job.id):
             logging.warning(f"Job is still running, cannot move data ({str(job)})")
+            return False
+
+        if not job.wdir.exists():
+            logging.error(
+                f"Source directory does not exist, cannot move: {job.wdir}"
+            )
             return False
 
         # Path(dest).mkdir(parents=True, exist_ok=True)

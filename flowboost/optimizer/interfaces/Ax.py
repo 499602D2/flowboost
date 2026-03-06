@@ -42,12 +42,21 @@ class AxBackend(Backend):
         self._SEM_by_objective: dict[str, Optional[float]] = {}
         self._trial_index_case_mapping: dict[Case, int] = {}
 
-    def initialize(self):
+    def initialize(self, num_already_completed: int = 0):
         if not self.stateless:
             raise NotImplementedError("Stateful optimizer checkpoints not implemented")
 
         # Check objectives + dimensions
         self._verify_configuration()
+
+        # Compute remaining initialization trials, accounting for already-completed ones
+        base_init = self.initialization_trials if self.initialization_trials is not None else 5
+        remaining_init = max(0, base_init - num_already_completed)
+
+        logging.info(
+            f"Ax initialization: base={base_init}, already_completed={num_already_completed}, "
+            f"remaining_init_trials={remaining_init}"
+        )
 
         # Create a stateless optimizer client
         self.client.create_experiment(
@@ -56,7 +65,7 @@ class AxBackend(Backend):
             parameter_constraints=self._parameter_constraints,
             outcome_constraints=self._outcome_constraints,
             choose_generation_strategy_kwargs={
-                "num_initialization_trials": self.initialization_trials,
+                "num_initialization_trials": remaining_init,
                 "use_saasbo": self.SAASBO,
                 "verbose": True,
                 "max_parallelism_override": self.max_parallelism,
@@ -200,7 +209,8 @@ class AxBackend(Backend):
         if not self.stateless:
             raise ValueError("Re-initialize should not be called when stateless=False")
         self.client = AxClient()
-        self.initialize()
+        num_completed = len(self._trial_index_case_mapping)
+        self.initialize(num_already_completed=num_completed)
 
     def set_objectives(self, objectives: list[Union[Objective, AggregateObjective]]):
         if isinstance(objectives, (Objective, AggregateObjective)):
@@ -415,8 +425,29 @@ class AxBackend(Backend):
             # Generate parametrizations: these describe the search space for Ax
             p = case.parametrize_configuration(self.dimensions)
 
-            logging.info(f"Attaching c={case.name}, p={p}")
-            _, idx = self.client.attach_trial(parameters=p, arm_name=case.name)
+            # TODO: report this to Ax issue tracker
+            # Convert types to match Ax search space expectations
+            p_typed = {}
+            for dim in self.dimensions:
+                value = p[dim.name]
+
+                # Convert to the proper type based on dimension's value_type
+                if dim.value_type == "int":
+                    p_typed[dim.name] = int(float(value))
+                elif dim.value_type == "float":
+                    p_typed[dim.name] = float(value)
+                elif dim.value_type == "bool":
+                    p_typed[dim.name] = bool(value)
+                else:
+                    p_typed[dim.name] = str(value)
+
+                logging.debug(
+                    f"Converted {dim.name}: {value} ({type(value).__name__}) "
+                    f"-> {p_typed[dim.name]} ({type(p_typed[dim.name]).__name__})"
+                )
+
+            logging.info(f"Attaching c={case.name}, p={p_typed}")
+            _, idx = self.client.attach_trial(parameters=p_typed, arm_name=case.name)
 
             # TODO if we were to run in stateful mode, we'd stash the index
             self._trial_index_case_mapping[case] = idx

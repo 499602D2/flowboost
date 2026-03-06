@@ -5,7 +5,7 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Literal
 
 from flowboost.config import config
 from flowboost.manager.manager import JobV2, Manager
@@ -26,6 +26,10 @@ class Session:
         archival_dir: Optional[Path] = None,
         dataframe_format: str = "polars",
         backend: str = "AxBackend",
+        clone_method: Literal["foamCloneCase", "copy"] = "foamCloneCase",
+        max_evaluations: Optional[int] = None,
+        target_value: Optional[float] = None,
+        target_objective: Optional[str] = None,
     ):
         """
         Initialize an optimization session.
@@ -40,6 +44,13 @@ class Session:
                 default for case data access. Can be configured on a per-case \
                 basis. Defaults to polars.
             backend (str, optional): Optimization backend to use. Defaults to "Ax".
+            clone_method (Literal["foamCloneCase", "copy"], optional): Method to use for cloning cases. Defaults to "foamCloneCase".
+            max_evaluations (Optional[int], optional): Maximum number of evaluations \
+                before stopping optimization. Defaults to None (no limit).
+            target_value (Optional[float], optional): Target objective value to reach. \
+                Optimization stops when this value is achieved. Defaults to None.
+            target_objective (Optional[str], optional): Name of objective to check \
+                against target_value. If None, uses first objective. Defaults to None.
         """
         self.name: str = name
         self.data_dir: Path = Path(data_dir)
@@ -47,6 +58,12 @@ class Session:
         self.archival_dir: Path = Path(data_dir, "cases_completed")
         self.created_at: datetime = datetime.now(tz=timezone.utc)
         self.dataframe_format: str = dataframe_format
+        self.clone_method: Literal["foamCloneCase", "copy"] = clone_method
+
+        # Termination criteria
+        self.max_evaluations: Optional[int] = max_evaluations
+        self.target_value: Optional[float] = target_value
+        self.target_objective: Optional[str] = target_objective
 
         if archival_dir:
             if archival_dir == self.data_dir:
@@ -63,6 +80,9 @@ class Session:
         # Template simulation that optimization points are derived from
         self._template_case: Optional[Case] = None
         self._template_case_add_files: Optional[list[str]] = []
+
+        # Optional: override the submission script name for all cases
+        self.submission_script_name: Optional[str] = None
 
         if Path(self.data_dir, config.DEFAULT_CONFIG_NAME).exists():
             # Check if we can restore instead
@@ -186,6 +206,8 @@ class Session:
             free_slots, finished, was_acq_job = self.job_manager.do_monitoring()
             logging.info(f"Manager returned slots={free_slots}, finished={finished}")
 
+            self.print_top_designs(n=5)
+
             if was_acq_job:
                 self.handle_finished_acquisition_job(finished[0])
                 continue
@@ -193,15 +215,34 @@ class Session:
             for job in finished:
                 logging.info(f"Moving data for finished job {job}")
                 case_dest = Path(self.archival_dir, job.wdir.name)
-                self.job_manager.move_data_for_job(job=job, dest=case_dest)
+                move_ok = self.job_manager.move_data_for_job(job=job, dest=case_dest)
+
+                if not move_ok or not case_dest.exists():
+                    logging.warning(
+                        f"Skipping post_evaluation_update for {job.wdir.name}: "
+                        f"move failed or destination missing"
+                    )
+                    continue
+
                 Case(case_dest).post_evaluation_update(job.to_dict())
+
+            # Check termination criteria after processing finished cases
+            if self._check_termination_criteria():
+                logging.info("Termination criteria met - stopping optimization")
+                self._write_designs_log()
+                logging.info("Optimization complete!")
+                return
 
             logging.info("Entering optimizer loop")
             new_cases = self.loop_optimizer_once(num_new_cases=free_slots)
 
             for case in new_cases:
-                # TODO pass script args automatically
-                self.job_manager.submit_case(case)
+                self.job_manager.submit_case(case, script_name=self.submission_script_name)
+
+            # Write designs log and print all designs after submitting new cases
+            if new_cases:
+                self._write_designs_log()
+                self.print_top_designs(n=None)
 
     def loop_optimizer_once(self, num_new_cases: int) -> list[Case]:
         if self.backend.offload_acquisition:
@@ -229,7 +270,7 @@ class Session:
         if finished_cases:
             # If any are finished, attach them
             logging.info("Running model update")
-            self.backend.tell(self.get_finished_cases(batch_process=True))
+            self.backend.tell(finished_cases)  # ← Use the already-processed cases
 
         # If there are pending cases, attach them
         self.backend.attach_pending_cases(self.get_pending_cases())
@@ -321,6 +362,7 @@ class Session:
         if data.get("optimizer", "") != self.backend.type:
             raise ValueError(f"Incorrect optimizer type in result JSON: {data}")
 
+        # THIS IS WHERE OPTIMIZATION COMPLETION IS CHECKED
         if data.get("status_finished", False) is True:
             logging.info("Backends reported optimization as finished: exiting")
             sys.exit("Optimization finished")
@@ -458,6 +500,21 @@ class Session:
             )
 
         logging.info(f"Session restored from {from_file}")
+        # No automatic pending case cleanup here.
+
+    def clean_pending_cases(self):
+        """
+        Explicitly removes all pending case directories.
+        Call this before session.start() if you want to discard any
+        leftover pending cases from a previous run and start fresh.
+        """
+        removed = 0
+        for p in filter(Path.is_dir, self.pending_dir.iterdir()):
+            if path_is_foam_dir(p):
+                shutil.rmtree(p)
+                removed += 1
+
+        logging.info(f"Cleaned {removed} pending case(s) from {self.pending_dir}")
 
     def _process_optimizer_suggestion(
         self, suggestions: list[dict[Dimension, Any]]
@@ -480,23 +537,25 @@ class Session:
         if self._template_case is None:
             raise ValueError("Template case is None: cannot generate cases")
 
-        # Get prefix for this batch
-        stage_prefix = self._get_next_stage_prefix()
+        # Get next job number (sequential counter of all cases ever submitted)
+        job_number = self._get_next_job_number()
 
         new_cases: list[Case] = []
 
         for case_i, suggestion_dict in enumerate(suggestions):
-            # Prefix format is `stage_001_01`
+            # Format: job_00050_250_8470316a
             uid = unique_id()
-            name = f"stage{stage_prefix:03d}.{case_i+1:02d}_{uid}"
+            name = f"job_{job_number:05d}_{uid}"
 
             # Clone template case
             case = self._template_case.clone(
-                clone_to=Path(self.pending_dir, name), add=self._template_case_add_files
+                clone_to=Path(self.pending_dir, name),
+                add=self._template_case_add_files,
+                method=self.clone_method
             )
 
             case.id = uid
-            case._generation_index = f"{stage_prefix:03d}.{case_i+1:02d}"
+            case._generation_index = f"{job_number:05d}.{case_i+1:02d}"
 
             # Apply all suggestions
             self._apply_suggestions_to_case(case, suggestion_dict)
@@ -510,6 +569,7 @@ class Session:
             case.update_metadata(suggestion_metadata, header)
 
             new_cases.append(case)
+            job_number += 1
 
         # Persist session
         self.persist()
@@ -553,20 +613,32 @@ class Session:
 
         return ser_dict
 
-    def _get_next_stage_prefix(self) -> int:
-        # Returns next stage index
+    def _get_next_job_number(self) -> int:
+        """
+        Returns the next sequential job number based on all cases ever created.
+        This is a simple counter of total case submissions.
+        """
         cases = self.get_all_cases(include_failed=True)
 
         if not cases:
             return 1
 
-        # Separate names by '.' and remove the "stage" prefix
-        names = [c.name.split(".")[0].replace("stage", "") for c in cases]
+        # Extract job numbers from case names
+        job_numbers = []
+        for case in cases:
+            # Case names are like: job_00050_angleOfAttack_30.919_8470316a
+            parts = case.name.split("_")
+            if parts[0] == "job" and len(parts) > 1:
+                try:
+                    job_num = int(parts[1])
+                    job_numbers.append(job_num)
+                except ValueError:
+                    continue
 
-        # Process to ints
-        int_names = [int(name) for name in names if name.isdigit()]
+        if not job_numbers:
+            return 1
 
-        return max(int_names) + 1
+        return max(job_numbers) + 1
 
     def _ensure_dirs(self):
         if not self.data_dir.exists():
@@ -650,8 +722,251 @@ class Session:
         if self.archival_dir.exists():
             logging.warning(f"Not removing archival directory [{self.archival_dir}]")
 
+    def _check_termination_criteria(self) -> bool:
+        """
+        Check if any termination criteria have been met.
+
+        Returns:
+            bool: True if optimization should stop, False otherwise
+        """
+        finished_cases = self.get_finished_cases(include_failed=False)
+
+        # Criterion 1: Maximum number of evaluations
+        if self.max_evaluations is not None:
+            num_evaluations = len(finished_cases)
+            if num_evaluations >= self.max_evaluations:
+                logging.info(
+                    f"Reached maximum evaluations: {num_evaluations}/{self.max_evaluations}"
+                )
+                return True
+
+        # Criterion 2: Target value reached
+        if self.target_value is not None:
+            if not self.backend.objectives:
+                logging.warning("No objectives configured - cannot check target value")
+                return False
+
+            # Determine which objective to check
+            if self.target_objective:
+                objective = next(
+                    (obj for obj in self.backend.objectives
+                     if obj.name == self.target_objective),
+                    None
+                )
+                if not objective:
+                    logging.warning(
+                        f"Target objective '{self.target_objective}' not found"
+                    )
+                    return False
+            else:
+                objective = self.backend.objectives[0]
+
+            # Check if target has been reached
+            for case in finished_cases:
+                metadata = case.read_metadata()
+                if not metadata:
+                    continue
+
+                # Prefer raw value, fall back to processed
+                raw_values = metadata.get("objective-values-raw", {})
+                obj_outputs = metadata.get("objective-outputs", {})
+
+                if objective.name in obj_outputs:
+                    value = raw_values.get(
+                        objective.name,
+                        obj_outputs[objective.name].get("value")
+                    )
+                    if value is not None:
+                        if objective.minimize:
+                            target_reached = value <= self.target_value
+                        else:
+                            target_reached = value >= self.target_value
+
+                        if target_reached:
+                            logging.info(
+                                f"Target value reached! {objective.name}={value:.6f} "
+                                f"(target={self.target_value:.6f})"
+                            )
+                            return True
+
+        return False
+
     @staticmethod
     def _pretty_print_cases(cases: list[Case]):
         print(f"=== New cases ({len(cases)}) ===")
         for i, case in enumerate(cases, 1):
             print(f"[{i}] {str(case)}")
+
+    def print_top_designs(self, n: Optional[int] = 5, by_objective: Optional[str] = None):
+        """
+        Display the top N designs based on objective function values.
+        If n is None, displays all designs in submission order.
+
+        Args:
+            n (Optional[int]): Number of top designs to display. If None, shows all \
+                in submission order. Defaults to 5.
+            by_objective (Optional[str]): Name of objective to rank by. If None, \
+                uses the first objective. Defaults to None.
+        """
+        # Get finished and successful cases
+        finished_cases = self.get_finished_cases(include_failed=False, batch_process=False)
+
+        if not finished_cases:
+            print("No completed cases available yet.")
+            return
+
+        if not self.backend.objectives:
+            print("No objectives configured.")
+            return
+
+        # Determine which objective to use for ranking
+        if by_objective:
+            objective = next((obj for obj in self.backend.objectives if obj.name == by_objective), None)
+            if not objective:
+                raise ValueError(f"Objective '{by_objective}' not found")
+        else:
+            objective = self.backend.objectives[0]
+
+        # Extract objective values for all cases from metadata
+        case_scores = []
+        for case in finished_cases:
+            metadata = case.read_metadata()
+            if not metadata:
+                continue
+
+            # Get raw value
+            raw_values = metadata.get("objective-values-raw", {})
+            raw_value = raw_values.get(objective.name)
+
+            if raw_value is not None:
+                # Get processed value for ranking (optimizer uses this)
+                obj_outputs = metadata.get("objective-outputs", {})
+                proc_value = obj_outputs.get(objective.name, {}).get("value", raw_value)
+
+                # Get generation index for submission order
+                gen_index = metadata.get("generation_index", "99999.99")
+                case_scores.append((case, proc_value, raw_value, gen_index))
+
+        if not case_scores:
+            print(f"No valid objective values found for '{objective.name}'")
+            return
+
+        if n is None:
+            # Show all in submission order
+            case_scores.sort(key=lambda x: x[3])  # Sort by generation_index
+            display_cases = case_scores
+            header = f"=== All Designs in Submission Order (by '{objective.name}') ==="
+        else:
+            # Sort by processed value for proper ranking (reverse if maximizing)
+            reverse = not objective.minimize  # Higher is better if maximizing
+            case_scores.sort(key=lambda x: x[1], reverse=reverse)
+            display_cases = case_scores[:min(n, len(case_scores))]
+            header = f"=== Top {len(display_cases)} Designs (by '{objective.name}') ==="
+
+        other_objectives = [obj for obj in self.backend.objectives if obj.name != objective.name]
+
+        COL_RANK = 6
+        COL_NAME = 35
+        COL_OBJ = 18
+        COL_PARAMS = 30
+        n_obj_cols = 1 + len(other_objectives)
+
+        print(f"\n{header}")
+        obj_header = f"{objective.name:<{COL_OBJ}}" + "".join(f"{obj.name:<{COL_OBJ}}" for obj in other_objectives)
+        print(f"{'Rank':<{COL_RANK}} {'Case Name':<{COL_NAME}} {obj_header} {'Parameters'}")
+        print("-" * (COL_RANK + COL_NAME + COL_OBJ * n_obj_cols + COL_PARAMS))
+
+        for rank, (case, proc_value, raw_value, gen_index) in enumerate(display_cases, 1):
+            metadata = case.read_metadata()
+
+            # Get parameter values
+            params = []
+            if metadata and "optimizer-suggestion" in metadata:
+                opt_sugg = metadata["optimizer-suggestion"]
+                params = [
+                    f"{k}={v.get('value', 'N/A'):.3f}" if isinstance(v.get('value'), (int, float)) else f"{k}={v.get('value', 'N/A')}"
+                    for k, v in opt_sugg.items()
+                ]
+            params_str = ", ".join(params) if params else "N/A"
+
+            # Primary objective raw value
+            obj_values_str = f"{raw_value:<18.6f}"
+
+            # Other objectives raw values
+            if metadata:
+                raw_all = metadata.get("objective-values-raw", {})
+                for obj in other_objectives:
+                    other_val = raw_all.get(obj.name)
+                    if other_val is not None:
+                        obj_values_str += f"{other_val:<18.6f}"
+                    else:
+                        obj_values_str += f"{'N/A':<18}"
+
+            print(f"{rank:<6} {case.name:<35} {obj_values_str} {params_str}")
+
+        print()
+
+    def _write_designs_log(self, fname: str = "designs.json"):
+        """
+        Writes a JSON file to the session data directory containing all
+        completed designs in chronological (submission) order, with their
+        parameters and raw objective values.
+
+        The file is overwritten on each call, always reflecting the full
+        current state.
+
+        Args:
+            fname (str): Output filename. Defaults to 'designs.json'.
+        """
+        finished_cases = self.get_finished_cases(include_failed=False, batch_process=False)
+
+        if not finished_cases:
+            return
+
+        designs = []
+
+        for case in finished_cases:
+            metadata = case.read_metadata()
+            if not metadata:
+                continue
+
+            # Parameters from optimizer suggestion
+            params = {}
+            if "optimizer-suggestion" in metadata:
+                for k, v in metadata["optimizer-suggestion"].items():
+                    params[k] = v.get("value")
+
+            # Raw objective values
+            objectives = {}
+            raw_obj_values = metadata.get("objective-values-raw", {})
+            if "objective-outputs" in metadata:
+                for obj_name, obj_data in metadata["objective-outputs"].items():
+                    objectives[obj_name] = {
+                        "value": raw_obj_values.get(obj_name, obj_data.get("value")),
+                        "minimize": obj_data.get("minimize"),
+                    }
+
+            designs.append({
+                "name": case.name,
+                "generation_index": metadata.get("generation_index"),
+                "created_at": str(metadata.get("created_at", "")),
+                "parameters": params,
+                "objectives": objectives,
+            })
+
+        # Sort chronologically by generation_index
+        designs.sort(key=lambda d: d["generation_index"] or "99999.99")
+
+        output = {
+            "session": self.name,
+            "updated_at": datetime.now(tz=timezone.utc).isoformat(),
+            "num_designs": len(designs),
+            "designs": designs,
+        }
+
+        out_path = Path(self.data_dir, fname)
+        with open(out_path, "w") as f:
+            json.dump(output, f, indent=2)
+
+        logging.info(f"Designs log written to {out_path} ({len(designs)} designs)")
+
