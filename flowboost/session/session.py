@@ -883,7 +883,10 @@ class Session:
             params = []
             if metadata and "optimizer-suggestion" in metadata:
                 opt_sugg = metadata["optimizer-suggestion"]
-                params = [f"{k}={v.get('value', 'N/A'):.3f}" for k, v in opt_sugg.items()]
+                params = [
+                    f"{k}={v.get('value', 'N/A'):.3f}" if isinstance(v.get('value'), (int, float)) else f"{k}={v.get('value', 'N/A')}"
+                    for k, v in opt_sugg.items()
+                ]
             params_str = ", ".join(params) if params else "N/A"
 
             # Primary objective raw value
