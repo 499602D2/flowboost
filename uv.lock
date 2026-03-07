@@ -714,7 +714,7 @@ requires-dist = [
     { name = "ax-platform", specifier = ">=1.0" },
     { name = "coloredlogs", specifier = ">=15" },
     { name = "pandas", specifier = ">=2.2" },
-    { name = "polars", specifier = ">=0.20" },
+    { name = "polars", specifier = ">=1.11" },
     { name = "polars-lts-cpu", marker = "extra == 'lts-cpu'", specifier = ">=0.20" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pyarrow", specifier = ">=15" },

@@ -28,8 +28,7 @@ def foam_in_env():
 @pytest.fixture(scope="session")
 def test_case(data_dir):
     case_path = Path(data_dir)
-    assert (
-        case_path.exists()
-    ), f"Path to example case data not found: [{case_path.resolve()}]"
+    if not case_path.exists():
+        pytest.skip(f"Test data not found: {case_path.resolve()}")
     case = Case(case_path)
     yield case

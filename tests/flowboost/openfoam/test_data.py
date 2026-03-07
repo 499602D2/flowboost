@@ -8,6 +8,9 @@ from flowboost.openfoam.case import Case
 
 def test_data_loading(data_dir):
     datadir = Path(data_dir)
+    if not datadir.exists():
+        import pytest
+        pytest.skip(f"Test data not found: {datadir.resolve()}")
     case = Case(datadir)
     logging.info(case)
 
