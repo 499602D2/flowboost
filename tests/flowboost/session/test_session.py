@@ -42,7 +42,7 @@ def test_incorrect_startup():
     pass
 
 
-def test_simple_blank_start(foam_in_env):
+def test_simple_blank_start(foam_in_env, tmp_path, monkeypatch):
     # Add objective function
     objective = Objective(
         name="test_objective", minimize=True, objective_function=lambda x: 1
@@ -58,7 +58,7 @@ def test_simple_blank_start(foam_in_env):
 
     session = Session(
         name="My cool optimization campaign",
-        data_dir=Path("~/test_campaign_flowboost").expanduser(),
+        data_dir=tmp_path / "test_campaign_flowboost",
         dataframe_format="polars",
     )
 
@@ -72,6 +72,9 @@ def test_simple_blank_start(foam_in_env):
     )
 
     session.attach_template_case(aachen_case)
+
+    # session.start() prompts for number of cases when no job manager is set
+    monkeypatch.setattr("builtins.input", lambda _: "2")
     new_cases = session.start()
 
     assert new_cases, "Optimizer did not provide new cases"
@@ -82,4 +85,4 @@ def test_simple_blank_start(foam_in_env):
     for i, out in enumerate(output, 1):
         print(f"[{i}] {out}")
 
-    # session._delete_all_data()
+    session._delete_all_data()

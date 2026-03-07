@@ -193,7 +193,7 @@ class Session:
             new_cases = self.loop_optimizer_once(num_new_cases=int(limit))
             logging.info(f"{len(new_cases)} new case(s) prepared")
             self._pretty_print_cases(new_cases)
-            return
+            return new_cases
 
         logging.info("Entering persistent optimization")
         self.persistent_optimization()
