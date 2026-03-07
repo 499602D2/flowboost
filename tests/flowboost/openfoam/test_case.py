@@ -46,9 +46,10 @@ def test_dictionary_link(foam_in_env, tutorial_case):
     assert reader.entry("type") == "sprayCloud"
 
 
-def test_case_clone_and_removal(foam_in_env, tutorial_case, new_case_dir):
+def test_case_clone_and_removal(foam_in_env, tutorial_case, tmp_path):
     # Copy tutorial case to a new folder and test removal
-    new_case = tutorial_case.clone(clone_to=new_case_dir)
+    clone_dest = tmp_path / "clonedCase"
+    new_case = tutorial_case.clone(clone_to=clone_dest)
     assert new_case.path.exists()
 
     # Test safe deletion

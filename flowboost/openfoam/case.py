@@ -1,6 +1,8 @@
 from __future__ import annotations  # pre-3.11 compatibility
 
 import logging
+import os
+import stat
 from datetime import datetime, timezone
 from enum import Enum
 from hashlib import blake2b
@@ -14,6 +16,7 @@ import tomlkit
 from flowboost.openfoam.data import Data
 from flowboost.openfoam.dictionary import DictionaryLink, DictionaryReader, Entry
 from flowboost.openfoam.interface import FOAM, run_command
+from flowboost.openfoam.runtime import FOAMRuntime, get_runtime
 from flowboost.optimizer.search_space import Dimension
 
 if TYPE_CHECKING:
@@ -117,7 +120,7 @@ class Case:
         Returns:
             Case: Object representing the new case
         """
-        new_case_path = Path(clone_to)
+        new_case_path = Path(clone_to).resolve()
         if new_case_path.exists():
             raise FileExistsError(f"Case directory already exists: '{new_case_path}'")
 
@@ -176,7 +179,9 @@ class Case:
         dest_path = Path(destination).resolve().absolute()
 
         if not source_path.exists():
-            raise FileNotFoundError(f"Source case directory does not exist: {source_path}")
+            raise FileNotFoundError(
+                f"Source case directory does not exist: {source_path}"
+            )
 
         if dest_path.exists():
             raise FileExistsError(f"Destination directory already exists: {dest_path}")
@@ -227,7 +232,7 @@ class Case:
         # Get path
         tutorial_path = FOAM.tutorial(relative_path=tutorial)
 
-        new_case_dir = Path(new_case_dir)
+        new_case_dir = Path(new_case_dir).resolve()
         if new_case_dir.exists():
             logging.warning(
                 f"Directory already exists: returning existing Case [{new_case_dir}]"
@@ -235,6 +240,11 @@ class Case:
             return Case(path=new_case_dir)
 
         if method == "copy":
+            runtime = get_runtime()
+            if runtime.mode != FOAMRuntime.Mode.NATIVE:
+                raise ValueError(
+                    "method='copy' is not supported in Docker mode — use method='foamCloneCase'"
+                )
             shutil.copytree(str(tutorial_path), str(new_case_dir))
         elif method == "foamCloneCase":
             cmd = ["foamCloneCase", tutorial_path, new_case_dir]
@@ -357,7 +367,9 @@ class Case:
 
         # Try to read from metadata first (for completed cases)
         metadata = self.read_metadata()
-        optimizer_suggestions = metadata.get("optimizer-suggestion", {}) if metadata else {}
+        optimizer_suggestions = (
+            metadata.get("optimizer-suggestion", {}) if metadata else {}
+        )
 
         for dim in dimensions:
             # First try to get from saved optimizer-suggestion metadata
@@ -407,7 +419,9 @@ class Case:
 
         return output_mapping
 
-    def submission_script(self, glob_with: str = "Allrun*", script_name: Optional[str] = None) -> Optional[Path]:
+    def submission_script(
+        self, glob_with: str = "Allrun*", script_name: Optional[str] = None
+    ) -> Optional[Path]:
         """Finds a submission script in the case directory.
 
         Args:
@@ -605,6 +619,16 @@ class Case:
 
         return cls(case_dir)
 
+    @staticmethod
+    def _force_rmtree(path: Path):
+        """Remove a directory tree, handling root-owned files from Docker."""
+
+        def _on_error(func, fpath, _exc_info):
+            os.chmod(fpath, stat.S_IRWXU)
+            func(fpath)
+
+        shutil.rmtree(path, onerror=_on_error)
+
     def _delete_all_data(self, skip_familiarity_checks: bool = False):
         """ Permanently deletes a case directory and all its contents.
 
@@ -618,7 +642,7 @@ class Case:
         # Verify that the directory looks like an OpenFOAM case directory
         if path_is_foam_dir(self.path) or skip_familiarity_checks:
             logging.info(f"Deleting case directory: {str(self)}")
-            run_command(command=["rm", "-rf", self.path])
+            self._force_rmtree(self.path)
             return True
 
         logging.error(

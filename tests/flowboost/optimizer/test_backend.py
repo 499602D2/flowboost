@@ -59,7 +59,8 @@ def test_tell(Ax_backend, test_case, foam_in_env):
     obj = Ax_backend.objectives[0]
 
     # Run evaluation for objective
-    out = obj.batch_process(cases=[test_case])
+    outputs = obj.batch_evaluate(cases=[test_case])
+    out = obj.batch_post_process(cases=[test_case], outputs=outputs)
     logging.info(f"Batch-processed: {out}")
 
     # Initialize backend

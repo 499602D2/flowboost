@@ -6,13 +6,29 @@ import pytest
 
 from flowboost.openfoam.dictionary import Dictionary, DictionaryReader
 from flowboost.openfoam.interface import FOAM
+from flowboost.openfoam.runtime import FOAMRuntime, get_runtime
 
 
 @pytest.fixture
 def tutorial_dictionary_reader(foam_in_env, tmp_path) -> Callable[[str], DictionaryReader]:
-    """Fixture to create a Dictionary reader for testing."""
+    """Fixture to create a Dictionary reader for testing.
+
+    In non-native mode, copies the tutorial file to tmp_path so it lives on
+    the host filesystem and survives across remote command invocations.
+    """
     def _reader(path: str) -> DictionaryReader:
-        return DictionaryReader(FOAM.tutorials() / path)
+        runtime = get_runtime()
+
+        if runtime.mode == FOAMRuntime.Mode.NATIVE:
+            return DictionaryReader(FOAM.tutorials() / path)
+
+        # Non-native: copy the tutorial file from the VM/container to tmp_path
+        tutorials = FOAM.tutorials()  # remote-internal path string
+        remote_path = f"{tutorials}/{path}"
+        local_dest = tmp_path / Path(path).name
+
+        runtime.transfer_file(remote_path, local_dest)
+        return DictionaryReader(local_dest)
 
     return _reader
 
@@ -20,11 +36,15 @@ def tutorial_dictionary_reader(foam_in_env, tmp_path) -> Callable[[str], Diction
 @pytest.fixture
 def foam_tutorial_dict_paths(foam_in_env) -> Generator[Path, None, None]:
     """Generates FOAM dictionary paths from tutorials folder."""
+    runtime = get_runtime()
+    if runtime.mode != FOAMRuntime.Mode.NATIVE:
+        pytest.skip("Requires native OpenFOAM (host-side directory traversal)")
+
     tutorials_path = FOAM.tutorials()
-    assert tutorials_path.exists(
+    assert Path(tutorials_path).exists(
     ), f"Tutorials folder does not exist: {tutorials_path}"
 
-    for constant_system_folder in tutorials_path.rglob('*'):
+    for constant_system_folder in Path(tutorials_path).rglob('*'):
         if constant_system_folder.name in ('constant', 'system'):
             for foam_file in constant_system_folder.iterdir():
                 if foam_file.is_file() and foam_file.suffix != '.dat':
@@ -60,9 +80,9 @@ def test_entry_read_and_write(tutorial_dictionary_reader):
     assert updated_mol_weight == new_mol_weight, "Write operation failed"
 
     # Reset the value back to original
-    reader.write("reactants/specie/molWeight", mol_weight)
+    reader.write("reactants/specie/molWeight", 16.0243)
     reset_mol_weight = reader.entry("reactants/specie/molWeight")
-    assert reset_mol_weight == mol_weight, "Reset operation failed"
+    assert reset_mol_weight == 16.0243, "Reset operation failed"
 
 
 def test_add_and_delete_entry(tutorial_dictionary_reader):
@@ -113,8 +133,8 @@ def test_entry_indexing(tutorial_dictionary_reader):
         test_array_key) is None, "Failed to delete the test array entry"
 
 
-def test_linking(tutorial_dictionary_reader):
-    """Test linking between dictionary entries."""
+def test_linking():
+    """Test linking between dictionary entries. No FOAM CLI needed."""
     header_link = Dictionary.link(
         "constant/physicalProperties").entry("FoamFile/format")
 
