@@ -1,10 +1,10 @@
 import json
 import logging
-import subprocess
 from functools import total_ordering
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from flowboost.openfoam.interface import run_foam_command
 from flowboost.openfoam.types import FOAMType
 
 
@@ -123,7 +123,7 @@ class DictionaryReader(Dictionary):
                 raise ValueError(f"No such entry in {self}: {entry}")
             entry = read
 
-        if not entry or not isinstance(entry, "Entry"):
+        if not entry or not isinstance(entry, Entry):
             raise ValueError(f"No such entry in {self}: {entry}")
 
         return entry.set(new_value=new_value)
@@ -186,10 +186,8 @@ class DictionaryReader(Dictionary):
         # Execute the CLI command to add the entry with the specified value
         foam_value = FOAMType.to_FOAM(value)
         cmd = ["foamDictionary", self.path, "-entry", entry_path, "-add", foam_value]
-        result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-        if result.stderr:
+        result = run_foam_command(cmd)
+        if result.returncode != 0:
             logging.error(f"Error adding new entry '{entry_path}': {result.stderr}")
             return None
 
@@ -243,10 +241,8 @@ class DictionaryReader(Dictionary):
 
         cmd = ["foamDictionary", self.path, "-keywords"]
 
-        result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
-        if result.stderr:
+        result = run_foam_command(cmd)
+        if result.returncode != 0:
             logging.error(f"Error discovering top-level keywords: {result.stderr}")
             return
 
@@ -360,14 +356,14 @@ class Entry:
     @property
     def name(self) -> Optional[str]:
         """Lazy-loads and returns name for dimensioned entries."""
-        if self.raw_value is None and self.terminating:
+        if self.raw_value is None and self.terminating is not False:
             self._discover_value()
 
         return self._name
 
     @property
     def dimension(self) -> Optional[str]:
-        if self.raw_value is None and self.terminating:
+        if self.raw_value is None and self.terminating is not False:
             self._discover_value()
 
         # Dimension is set during value discovery
@@ -376,7 +372,7 @@ class Entry:
     @property
     def value(self):
         """Lazy-loads and returns the post-processed, Pythonic value of the entry."""
-        if self._value is None and self.terminating:
+        if self._value is None and self.terminating is not False:
             self._discover_value()
 
         return self._value
@@ -384,7 +380,7 @@ class Entry:
     @property
     def raw_value(self):
         """Returns the raw string value of the entry."""
-        if self._raw_value is None and self.terminating:
+        if self._raw_value is None and self.terminating is not False:
             self._discover_value()
 
         return self._raw_value
@@ -480,11 +476,9 @@ class Entry:
             "-set",
             new_raw_val,
         ]
-        result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
+        result = run_foam_command(cmd)
 
-        if result.returncode != 0 or result.stderr:
+        if result.returncode != 0:
             logging.error(
                 f"Error setting value for '{self.print_path()}': {result.stderr}"
             )
@@ -521,11 +515,6 @@ class Entry:
 
     def delete(self) -> bool:
         """Deletes this entry from the dictionary."""
-        if self.parent:
-            # Remove this entry from the parent's keywords list
-            if self.parent.keywords and self in self.parent.keywords:
-                self.parent.keywords.remove(self)
-
         # Execute the CLI command to remove the entry from the dictionary file
         cmd = [
             "foamDictionary",
@@ -534,15 +523,21 @@ class Entry:
             self.print_path(),
             "-remove",
         ]
-        result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
+        result = run_foam_command(cmd)
 
-        if result.stderr:
+        if result.returncode != 0:
             logging.error(
                 f"Error deleting entry '{self.print_path()}': {result.stderr}"
             )
             return False
+
+        # Remove from in-memory list only after CLI success
+        if self.parent:
+            if self.parent.keywords and self in self.parent.keywords:
+                self.parent.keywords.remove(self)
+        else:
+            if self.dictionary._keywords and self in self.dictionary._keywords:
+                self.dictionary._keywords.remove(self)
 
         self._value = None
         self._raw_value = None
@@ -583,10 +578,11 @@ class Entry:
                 "-entry",
                 self.print_path(),
             ]
-            result = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-            )
-            if result.stderr:
+            result = run_foam_command(cmd)
+            # Note: stderr check is intentional here (unlike other call sites).
+            # foamDictionary -keywords writes to stderr for leaf entries even
+            # with returncode 0 — stderr presence signals a terminating entry.
+            if result.returncode != 0 or result.stderr:
                 self.terminating = True
                 return
 
@@ -613,11 +609,9 @@ class Entry:
             self.print_path(),
             "-value",
         ]
-        result = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
+        result = run_foam_command(cmd)
 
-        if result.stderr:
+        if result.returncode != 0:
             self._value, self._raw_value = None, None
             if self._verbose:
                 logging.error(

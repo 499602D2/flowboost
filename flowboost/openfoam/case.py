@@ -14,6 +14,7 @@ import tomlkit
 from flowboost.openfoam.data import Data
 from flowboost.openfoam.dictionary import DictionaryLink, DictionaryReader, Entry
 from flowboost.openfoam.interface import FOAM, run_command
+from flowboost.openfoam.runtime import FoamRuntime, get_runtime
 from flowboost.optimizer.search_space import Dimension
 
 if TYPE_CHECKING:
@@ -235,6 +236,11 @@ class Case:
             return Case(path=new_case_dir)
 
         if method == "copy":
+            runtime = get_runtime()
+            if runtime.mode != FoamRuntime.Mode.NATIVE:
+                raise ValueError(
+                    "method='copy' is not supported in Docker mode — use method='foamCloneCase'"
+                )
             shutil.copytree(str(tutorial_path), str(new_case_dir))
         elif method == "foamCloneCase":
             cmd = ["foamCloneCase", tutorial_path, new_case_dir]

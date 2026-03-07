@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
+from flowboost.openfoam.runtime import FoamRuntime, get_runtime
+
 
 def openfoam_in_env(func):
     def wrapper(*args, **kwargs):
@@ -17,6 +19,9 @@ def openfoam_in_env(func):
 class FOAM:
     @staticmethod
     def source(path: str):
+        if get_runtime().mode != FoamRuntime.Mode.NATIVE:
+            return  # Container has its own environment
+
         command = f"source {path} && env"
         proc = subprocess.Popen(
             command, stdout=subprocess.PIPE, shell=True, executable="/bin/bash"
@@ -31,7 +36,11 @@ class FOAM:
 
     @staticmethod
     @openfoam_in_env
-    def tutorials() -> Path:
+    def tutorials() -> str | Path:
+        runtime = get_runtime()
+        if runtime.mode != FoamRuntime.Mode.NATIVE:
+            return runtime.foam_tutorials_path()
+
         tutorials_path = os.environ.get("FOAM_TUTORIALS")
         if not tutorials_path:
             raise FileNotFoundError(f"OpenFOAM tutorials not found in {tutorials_path}")
@@ -42,12 +51,24 @@ class FOAM:
         if os.getenv(env_var):
             return True
 
-        return False
+        # Check if Docker runtime is available and usable
+        try:
+            runtime = get_runtime()
+            return runtime.is_available()
+        except RuntimeError:
+            return False
 
     @staticmethod
     @openfoam_in_env
-    def tutorial(relative_path: str) -> Path:
-        tutorial_case = FOAM.tutorials() / relative_path
+    def tutorial(relative_path: str) -> str | Path:
+        tutorials = FOAM.tutorials()
+        runtime = get_runtime()
+
+        if runtime.mode != FoamRuntime.Mode.NATIVE:
+            # tutorials is a container-internal path string
+            return f"{tutorials}/{relative_path}"
+
+        tutorial_case = Path(tutorials) / relative_path
         if not tutorial_case.exists():
             raise FileNotFoundError(
                 f"Tutorial case path does not exist: '{tutorial_case}'"
@@ -57,27 +78,34 @@ class FOAM:
 
 
 def run_command(command: list[Any], cwd: Optional[Path] = None) -> str:
-    """ Executes a shell command in a given directory, returning the utf-8 decoded
-    output.
+    """Executes a shell command, returning stdout. Routes FOAM commands
+    through the runtime (native or Docker).
 
     Args:
         command (list[Any]): List of command arguments
-        cwd (Optional[Path], optional): Directory to run command in, if not current \
-            directory. Defaults to None.
+        cwd (Optional[Path]): Directory to run command in. Defaults to None.
 
     Raises:
-        ValueError: _description_
+        ValueError: On non-zero return code.
 
     Returns:
-        str: utf-8 decoded command output from stdout
+        str: Command stdout
     """
     logging.debug(f"Executing command: {command}")
-    result = subprocess.run(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd, text=True
-    )
+    result = get_runtime().run(command, cwd=cwd)
 
-    if result.stderr:
-        raise ValueError(f"Error executing command '{command}': {result.stderr}")
+    if result.returncode != 0:
+        raise ValueError(
+            f"Command '{command}' failed (rc={result.returncode}): {result.stderr}"
+        )
 
     logging.debug(f"Command output: {result.stdout}")
     return result.stdout
+
+
+def run_foam_command(
+    command: list, cwd: Path | None = None
+) -> subprocess.CompletedProcess:
+    """Execute a command through the runtime, returning CompletedProcess
+    for caller-side error handling."""
+    return get_runtime().run(command, cwd=cwd)
