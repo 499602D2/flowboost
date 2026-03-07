@@ -30,6 +30,7 @@ class FOAMRuntime:
         "foamCloneCase",
         "foamCleanCase",
         "foamGet",
+        "foamToVTK",
         "listTimes",
     }
 
@@ -257,6 +258,7 @@ class FOAMRuntime:
                 directory (e.g. the workdir) avoids container restarts when
                 iterating over subdirectories.
         """
+        prev_mounts = self._mounts.copy()
         for m in mounts:
             self.add_mount(m)
         if self.mode == FOAMRuntime.Mode.DOCKER:
@@ -265,6 +267,7 @@ class FOAMRuntime:
             yield self
         finally:
             self._stop_container()
+            self._mounts = prev_mounts
 
     def cleanup(self):
         """Stop the persistent Docker container."""

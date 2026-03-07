@@ -180,6 +180,34 @@ class TestContainer:
                     raise ValueError("boom")
             mock_stop.assert_called_once()
 
+    def test_container_restores_mounts_on_exit(self):
+        runtime = self._make_docker_runtime()
+        runtime._mounts = [(Path("/existing"), "/work")]
+
+        with (
+            patch.object(runtime, "_ensure_container"),
+            patch.object(runtime, "_stop_container"),
+        ):
+            with runtime.container(Path("/tmp/new")):
+                assert len(runtime._mounts) == 2
+            assert len(runtime._mounts) == 1
+            assert runtime._mounts[0] == (Path("/existing"), "/work")
+
+    def test_container_restores_mounts_on_exception(self):
+        runtime = self._make_docker_runtime()
+        runtime._mounts = [(Path("/existing"), "/work")]
+
+        with (
+            patch.object(runtime, "_ensure_container"),
+            patch.object(runtime, "_stop_container"),
+        ):
+            with pytest.raises(ValueError):
+                with runtime.container(Path("/tmp/new")):
+                    assert len(runtime._mounts) == 2
+                    raise ValueError("boom")
+            assert len(runtime._mounts) == 1
+            assert runtime._mounts[0] == (Path("/existing"), "/work")
+
 
 class TestSingleton:
     def test_get_runtime_returns_same_instance(self):
