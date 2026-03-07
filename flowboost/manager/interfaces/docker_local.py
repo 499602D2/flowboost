@@ -1,12 +1,11 @@
 import logging
-import os
 import subprocess
 from pathlib import Path
 from subprocess import PIPE
 from typing import Any, Optional
 
 from flowboost.manager.manager import Manager
-from flowboost.openfoam.runtime import DOCKER_IMAGE, FOAMRuntime, get_runtime
+from flowboost.openfoam.runtime import FOAMRuntime, docker_image_name, get_runtime
 
 
 class DockerLocal(Manager):
@@ -18,7 +17,7 @@ class DockerLocal(Manager):
     """
 
     def __init__(self, wdir: Path | str, job_limit: int = 1) -> None:
-        self._docker_image = os.environ.get("FLOWBOOST_FOAM_IMAGE", DOCKER_IMAGE)
+        self._docker_image = docker_image_name()
         super().__init__(wdir, job_limit)
 
     @staticmethod

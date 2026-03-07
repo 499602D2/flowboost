@@ -13,6 +13,11 @@ DOCKER_IMAGE = "flowboost/openfoam:13"
 DOCKERFILE_DIR = Path(__file__).resolve().parent / "docker"
 
 
+def docker_image_name() -> str:
+    """Return the configured Docker image name (respects FLOWBOOST_FOAM_IMAGE)."""
+    return os.environ.get("FLOWBOOST_FOAM_IMAGE", DOCKER_IMAGE)
+
+
 class FOAMRuntime:
     """Decides how to execute OpenFOAM CLI commands: natively or via Docker.
 
@@ -35,10 +40,12 @@ class FOAMRuntime:
     }
 
     def __init__(self):
-        self._docker_image = os.environ.get("FLOWBOOST_FOAM_IMAGE", DOCKER_IMAGE)
+        self._docker_image = docker_image_name()
         self._cached_foam_tutorials: str | None = None
         self._mounts: list[tuple[Path, str]] = []
         self._container_id: str | None = None
+        self._atexit_registered: bool = False
+        self._in_container_block: bool = False
         self.mode = self._detect_mode()
 
     def _detect_mode(self) -> "FOAMRuntime.Mode":
@@ -145,27 +152,37 @@ class FOAMRuntime:
             create_cmd.extend(["-v", f"{host_root}:{container_root}"])
         create_cmd.extend([self._docker_image, "sleep", "infinity"])
 
-        result = subprocess.run(create_cmd, stdout=PIPE, stderr=PIPE, text=True)
+        result = subprocess.run(
+            create_cmd, stdout=PIPE, stderr=PIPE, text=True, timeout=30
+        )
         if result.returncode != 0:
             raise RuntimeError(f"Failed to create container: {result.stderr}")
 
-        self._container_id = result.stdout.strip()
+        cid = result.stdout.strip()
 
         result = subprocess.run(
-            ["docker", "start", self._container_id],
+            ["docker", "start", cid],
             stdout=PIPE,
             stderr=PIPE,
             text=True,
+            timeout=10,
         )
         if result.returncode != 0:
-            self._container_id = None
+            # Clean up the created-but-not-started container
+            subprocess.run(
+                ["docker", "rm", cid], stdout=PIPE, stderr=PIPE, timeout=10
+            )
             raise RuntimeError(f"Failed to start container: {result.stderr}")
 
-        logging.debug(f"Started persistent container {self._container_id[:12]}")
-        atexit.register(self._stop_container)
+        self._container_id = cid
+        logging.debug(f"Started persistent container {cid[:12]}")
+
+        if not self._atexit_registered:
+            atexit.register(self._stop_container)
+            self._atexit_registered = True
 
     def _stop_container(self):
-        """Stop and remove the persistent container."""
+        """Stop and remove the persistent container. Never raises."""
         if not self._container_id:
             return
 
@@ -180,13 +197,17 @@ class FOAMRuntime:
                 timeout=15,
             )
         except subprocess.TimeoutExpired:
-            # Force-kill if graceful stop hangs
-            subprocess.run(
-                ["docker", "kill", cid],
-                stdout=PIPE,
-                stderr=PIPE,
-                timeout=10,
-            )
+            try:
+                subprocess.run(
+                    ["docker", "kill", cid],
+                    stdout=PIPE,
+                    stderr=PIPE,
+                    timeout=10,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                logging.warning(f"Failed to kill container {cid[:12]}")
+        except OSError:
+            logging.warning(f"Failed to stop container {cid[:12]}")
 
         logging.debug(f"Stopped container {cid[:12]}")
 
@@ -205,6 +226,12 @@ class FOAMRuntime:
                 "Cannot add mounts after the container has started. "
                 "Call add_mount() before running any FOAM commands."
             )
+        existing_guests = {g for _, g in self._mounts}
+        if guest_path in existing_guests:
+            raise RuntimeError(
+                f"Mount guest path '{guest_path}' is already in use. "
+                "Use a different guest_path to avoid shadowing."
+            )
         self._mounts.append((host_path.resolve(), guest_path))
 
     def _auto_mount(self, command: list, cwd: Path | None):
@@ -219,7 +246,7 @@ class FOAMRuntime:
             host_dirs.append(Path(cwd).resolve())
         for arg in command[1:]:
             p = Path(arg)
-            if p.is_absolute() and not str(arg).startswith("/opt"):
+            if p.is_absolute() and (p.exists() or p.parent.exists()):
                 # Use parent dir — the arg may be a file or non-existent target
                 host_dirs.append(p.resolve().parent)
 
@@ -233,6 +260,13 @@ class FOAMRuntime:
         for p in uncovered[1:]:
             while not p.is_relative_to(common):
                 common = common.parent
+
+        if len(common.parts) <= 2:
+            raise RuntimeError(
+                f"Auto-mount would mount '{common}' which is too broad. "
+                f"Pre-register mounts with container() or add_mount() instead. "
+                f"Uncovered paths: {uncovered}"
+            )
 
         mount_index = len(self._mounts)
         guest_path = f"/work{mount_index}" if mount_index > 0 else "/work"
@@ -253,19 +287,31 @@ class FOAMRuntime:
     def container(self, *mounts: Path):
         """Context manager that runs a Docker container for the block's duration.
 
+        Not re-entrant — if a container is already running via ``container()``,
+        inner functions should just call ``run()`` directly.
+
         Args:
             *mounts: Host directories to bind-mount. Pre-registering a parent
                 directory (e.g. the workdir) avoids container restarts when
                 iterating over subdirectories.
         """
+        if self._in_container_block:
+            raise RuntimeError(
+                "container() is not re-entrant — a container is already running. "
+                "Inner functions should use run() directly."
+            )
         prev_mounts = self._mounts.copy()
         for m in mounts:
-            self.add_mount(m)
+            mount_index = len(self._mounts)
+            guest = f"/work{mount_index}" if mount_index > 0 else "/work"
+            self.add_mount(m, guest)
         if self.mode == FOAMRuntime.Mode.DOCKER:
             self._ensure_container()
+        self._in_container_block = True
         try:
             yield self
         finally:
+            self._in_container_block = False
             self._stop_container()
             self._mounts = prev_mounts
 
@@ -322,9 +368,10 @@ class FOAMRuntime:
         Only valid in Docker mode. Native mode should read FOAM_TUTORIALS
         from the environment directly (handled by FOAM.tutorials()).
         """
-        assert self.mode != FOAMRuntime.Mode.NATIVE, (
-            "_foam_tutorials_path() should not be called in native mode"
-        )
+        if self.mode == FOAMRuntime.Mode.NATIVE:
+            raise RuntimeError(
+                "_foam_tutorials_path() should not be called in native mode"
+            )
 
         if self._cached_foam_tutorials:
             return self._cached_foam_tutorials
