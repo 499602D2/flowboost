@@ -60,7 +60,10 @@ module-root = ""
 minversion = "8.0"
 addopts = "-ra -v -n 4"
 testpaths = ["tests"]
-markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "native_foam_only: requires native OpenFOAM (not Docker)",
+]
 log_cli = true
 log_cli_level = "INFO"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
