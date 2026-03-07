@@ -1,6 +1,6 @@
 [project]
 name = "flowboost"
-version = "0.2.2"
+version = "0.2.3"
 description = "Multi-objective Bayesian optimization library for OpenFOAM"
 license = "Apache-2.0"
 authors = [
@@ -42,12 +42,22 @@ dependencies = [
 
 [project.optional-dependencies]
 lts-cpu = ["polars-lts-cpu>=0.20"]
+viz = [
+    "pyvista>=0.47.1",
+]
 
 [project.urls]
 Repository = "https://github.com/499602D2/flowboost"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-cov>=5", "pytest-xdist>=3.8"]
+dev = [
+    "pre-commit>=4.5.1",
+    "pytest>=8",
+    "pytest-cov>=5",
+    "pytest-xdist>=3.8",
+    "ruff>=0.15.5",
+    "ty>=0.0.21",
+]
 
 [build-system]
 requires = ["uv_build>=0.10.4,<0.11.0"]
