@@ -237,14 +237,14 @@ class FoamRuntime:
     # OpenFOAM environment queries
     # ------------------------------------------------------------------
 
-    def foam_tutorials_path(self) -> str:
+    def _foam_tutorials_path(self) -> str:
         """Query the container for $FOAM_TUTORIALS. Returns a container-internal path.
 
         Only valid in Docker mode. Native mode should read FOAM_TUTORIALS
         from the environment directly (handled by FOAM.tutorials()).
         """
         assert self.mode != FoamRuntime.Mode.NATIVE, \
-            "foam_tutorials_path() should not be called in native mode"
+            "_foam_tutorials_path() should not be called in native mode"
 
         if self._cached_foam_tutorials:
             return self._cached_foam_tutorials

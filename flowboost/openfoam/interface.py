@@ -39,7 +39,7 @@ class FOAM:
     def tutorials() -> str | Path:
         runtime = get_runtime()
         if runtime.mode != FoamRuntime.Mode.NATIVE:
-            return runtime.foam_tutorials_path()
+            return runtime._foam_tutorials_path()
 
         tutorials_path = os.environ.get("FOAM_TUTORIALS")
         if not tutorials_path:
