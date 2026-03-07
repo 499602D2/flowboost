@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from ax import Trial
+from ax.core.base_trial import BaseTrial
 from ax.service.ax_client import AxClient, ObjectiveProperties, TParameterization
 
 from flowboost.openfoam.case import Case
@@ -67,7 +67,7 @@ class AxBackend(Backend):
             choose_generation_strategy_kwargs={
                 "num_initialization_trials": remaining_init,
                 "use_saasbo": self.SAASBO,
-                "verbose": True,
+                "disable_progbar": False,
                 "max_parallelism_override": self.max_parallelism,
             },
         )
@@ -452,7 +452,7 @@ class AxBackend(Backend):
             # TODO if we were to run in stateful mode, we'd stash the index
             self._trial_index_case_mapping[case] = idx
 
-    def _can_abandon_trial(self, trial: Trial) -> bool:
+    def _can_abandon_trial(self, trial: BaseTrial) -> bool:
         if trial is None:
             return False
 

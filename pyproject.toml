@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
-    "ax-platform>=0.3.7",
+    "ax-platform>=1.0",
     "coloredlogs>=15",
     "pandas>=2.2",
     "polars>=0.20",

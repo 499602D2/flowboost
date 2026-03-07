@@ -24,9 +24,7 @@ def td_format(td: timedelta, precision: Optional[int] = None) -> str:
         str: A human-readable string
     """
     seconds = int(td.total_seconds())
-    if seconds == 0:
-        return "0 seconds"
-    elif seconds < 0:
+    if seconds <= 0:
         return "In the past"
 
     strings = []

@@ -69,10 +69,7 @@ def test_case_safe_deletion(foam_in_env, tmp_path):
 
 
 def test_property_decorated_data(new_case_dir):
-    p = Path(new_case_dir)
-    p.mkdir()
-
-    c = Case(p)
+    c = Case(new_case_dir)
     assert c.data is not None
 
 

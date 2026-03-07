@@ -15,7 +15,7 @@ from flowboost.session.session import Session
 def test_session(tmp_path):
     session = Session(
         name="My cool optimization campaign",
-        data_dir=Path("~/foamboost_test").expanduser(),
+        data_dir=tmp_path / "flowboost_test",
     )
     yield session
     session._delete_all_data()
@@ -45,7 +45,7 @@ def test_incorrect_startup():
 def test_simple_blank_start(foam_in_env):
     # Add objective function
     objective = Objective(
-        name="Test Objective", minimize=True, objective_function=lambda x: 1
+        name="test_objective", minimize=True, objective_function=lambda x: 1
     )
 
     # Define what to modify
@@ -53,7 +53,7 @@ def test_simple_blank_start(foam_in_env):
 
     # Add dimension for the dictionary entry
     dim = Dimension.range(
-        name="Test Dim", link=dict_link, lower=1e-3, upper=1e-1, log_scale=True
+        name="test_dim", link=dict_link, lower=1e-3, upper=1e-1, log_scale=True
     )
 
     session = Session(

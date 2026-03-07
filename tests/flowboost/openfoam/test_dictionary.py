@@ -103,8 +103,9 @@ def test_entry_indexing(tutorial_dictionary_reader):
     for i, expected_value in enumerate(test_array_value):
         # Assuming the reader or entry provides a method to index into the array, like `index`
         actual_value = added_entry.index(i)
-        assert actual_value == expected_value, f"Array value at index {
-            i} is incorrect: expected {expected_value}, got {actual_value}"
+        assert actual_value == expected_value, (
+            f"Array value at index {i} is incorrect: expected {expected_value}, got {actual_value}"
+        )
 
     # Delete the test array entry after verification
     reader.delete(test_array_key)
