@@ -1,47 +1,64 @@
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
-
-[tool.poetry]
+[project]
 name = "flowboost"
-version = "0.1.1"
+version = "0.2.1"
 description = "Multi-objective optimization framework for OpenFOAM"
 license = "Apache-2.0"
-authors = ["Daniel Virokannas"]
-maintainers = ["Bulut Tekgul <bulut.tekgul@wartsila.com>"]
+authors = [
+    { name = "Daniel Virokannas", email = "46869890+499602D2@users.noreply.github.com" },
+]
+maintainers = [
+    { name = "Daniel Virokannas", email = "46869890+499602D2@users.noreply.github.com" },
+    { name = "Bulut Tekgul", email = "bulut.tekgul@wartsila.com" },
+]
 readme = "README.md"
-repository = "https://github.com/499602D2/flowboost"
+requires-python = ">=3.10"
 keywords = [
     "OpenFOAM",
+    "CFD",
     "Bayesian optimization",
-    "Multi-objective",
+    "Multi-objective optimization",
     "HPC",
     "Cluster computing",
 ]
-classifiers = ["Topic :: Scientific/Engineering"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "ax-platform>=0.3.7",
+    "coloredlogs>=15",
+    "pandas>=2.2",
+    "polars>=0.20",
+    "psutil>=5.9",
+    "pyarrow>=15",
+    "scikit-learn>=1.4",
+    "tomlkit>=0.12",
+]
 
-[tool.poetry.dependencies]
-"python" = "^3.10"
-"ax-platform" = "*"
-"pandas" = "*"
-"polars" = { version = "*", optional = false }
-"polars-lts-cpu" = { version = "*", optional = true }
-"psutil" = "*"
-"pyarrow" = "*"
-"scikit-learn" = "*"
-"tomlkit" = "*"
-coloredlogs = "*"
+[project.optional-dependencies]
+lts-cpu = ["polars-lts-cpu>=0.20"]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^8"
-pytest-cov = "*"
+[project.urls]
+Repository = "https://github.com/499602D2/flowboost"
 
-[tool.poetry.scripts]
-generate-requirements = "flowboost.scripts.requirements:generate"
+[dependency-groups]
+dev = ["pytest>=8", "pytest-cov>=5", "pytest-xdist>=3.8"]
+
+[build-system]
+requires = ["uv_build>=0.10.4,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra -v"
+addopts = "-ra -v -n 4"
 testpaths = ["tests"]
 markers = ["slow: marks tests as slow (deselect with '-m \"not slow\"')"]
 log_cli = true
