@@ -44,7 +44,7 @@ class TestSubmitJob:
         assert "--name" in call_args
         assert call_args[call_args.index("--name") + 1] == "flwbst_job01"
         assert f"{cwd}:/work" in call_args
-        assert "Allrun" == call_args[-1]
+        assert "./Allrun" == call_args[-1]
 
     def test_submit_passes_script_args_as_env(self, manager):
         mock_result = MagicMock(returncode=0, stdout="containerid\n")
@@ -54,7 +54,9 @@ class TestSubmitJob:
             patch("flowboost.manager.interfaces.docker_local.get_runtime"),
         ):
             manager._submit_job(
-                "job", Path("/work"), Path("/work/Allrun"),
+                "job",
+                Path("/work"),
+                Path("/work/Allrun"),
                 script_args={"NPROCS": "4", "SOLVER": "simpleFoam"},
             )
 
@@ -102,7 +104,9 @@ class TestJobHasFinished:
             assert manager._job_has_finished("gone123")
 
     def test_timeout_returns_not_finished(self, manager):
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="", timeout=10)):
+        with patch(
+            "subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="", timeout=10)
+        ):
             assert not manager._job_has_finished("slow123")
 
 

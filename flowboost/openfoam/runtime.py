@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
 from subprocess import PIPE
@@ -71,7 +72,10 @@ class FOAMRuntime:
     def _docker_available() -> bool:
         try:
             result = subprocess.run(
-                ["docker", "info"], stdout=PIPE, stderr=PIPE, timeout=5,
+                ["docker", "info"],
+                stdout=PIPE,
+                stderr=PIPE,
+                timeout=5,
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -82,7 +86,9 @@ class FOAMRuntime:
         try:
             result = subprocess.run(
                 ["docker", "image", "inspect", self._docker_image],
-                stdout=PIPE, stderr=PIPE, timeout=5,
+                stdout=PIPE,
+                stderr=PIPE,
+                timeout=5,
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -105,13 +111,12 @@ class FOAMRuntime:
         )
         result = subprocess.run(
             ["docker", "build", "-t", self._docker_image, str(DOCKERFILE_DIR)],
-            stderr=PIPE, text=True,
+            stderr=PIPE,
+            text=True,
             timeout=600,
         )
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to build Docker image: {result.stderr}"
-            )
+            raise RuntimeError(f"Failed to build Docker image: {result.stderr}")
         logging.info(f"Docker image '{self._docker_image}' built successfully")
 
     def is_available(self) -> bool:
@@ -147,7 +152,9 @@ class FOAMRuntime:
 
         result = subprocess.run(
             ["docker", "start", self._container_id],
-            stdout=PIPE, stderr=PIPE, text=True,
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
         )
         if result.returncode != 0:
             self._container_id = None
@@ -167,13 +174,17 @@ class FOAMRuntime:
         try:
             subprocess.run(
                 ["docker", "stop", "-t", "5", cid],
-                stdout=PIPE, stderr=PIPE, timeout=15,
+                stdout=PIPE,
+                stderr=PIPE,
+                timeout=15,
             )
         except subprocess.TimeoutExpired:
             # Force-kill if graceful stop hangs
             subprocess.run(
                 ["docker", "kill", cid],
-                stdout=PIPE, stderr=PIPE, timeout=10,
+                stdout=PIPE,
+                stderr=PIPE,
+                timeout=10,
             )
 
         logging.debug(f"Stopped container {cid[:12]}")
@@ -194,6 +205,66 @@ class FOAMRuntime:
                 "Call add_mount() before running any FOAM commands."
             )
         self._mounts.append((host_path.resolve(), guest_path))
+
+    def _auto_mount(self, command: list, cwd: Path | None):
+        """Auto-register mounts for host paths not covered by existing mounts.
+
+        Collects absolute host paths from command args and cwd, finds their
+        common ancestor, and registers it as a mount. Restarts the container
+        if it's already running.
+        """
+        host_dirs = []
+        if cwd:
+            host_dirs.append(Path(cwd).resolve())
+        for arg in command[1:]:
+            p = Path(arg)
+            if p.is_absolute() and not str(arg).startswith("/opt"):
+                # Use parent dir — the arg may be a file or non-existent target
+                host_dirs.append(p.resolve().parent)
+
+        # Filter to paths not already covered by a mount
+        uncovered = [p for p in host_dirs if not self._is_mounted(p)]
+        if not uncovered:
+            return
+
+        # Find common parent of all uncovered paths
+        common = uncovered[0]
+        for p in uncovered[1:]:
+            while not p.is_relative_to(common):
+                common = common.parent
+
+        mount_index = len(self._mounts)
+        guest_path = f"/work{mount_index}" if mount_index > 0 else "/work"
+
+        if self._container_id:
+            logging.debug(f"New mount needed for {common} — restarting container")
+            self._stop_container()
+
+        self._mounts.append((common, guest_path))
+        logging.debug(f"Auto-mounted {common} → {guest_path}")
+
+    def _is_mounted(self, path: Path) -> bool:
+        """Check if a host path is covered by an existing mount."""
+        resolved = path.resolve()
+        return any(resolved.is_relative_to(host_root) for host_root, _ in self._mounts)
+
+    @contextmanager
+    def container(self, *mounts: Path):
+        """Context manager that runs a Docker container for the block's duration.
+
+        Args:
+            *mounts: Host directories to bind-mount. Pre-registering a parent
+                directory (e.g. the workdir) avoids container restarts when
+                iterating over subdirectories.
+        """
+        for m in mounts:
+            self.add_mount(m)
+        if self.mode == FOAMRuntime.Mode.DOCKER:
+            self._ensure_container()
+        try:
+            yield self
+        finally:
+            self._stop_container()
 
     def cleanup(self):
         """Stop the persistent Docker container."""
@@ -217,6 +288,7 @@ class FOAMRuntime:
     def _docker_exec(
         self, command: list, cwd: Path | None
     ) -> subprocess.CompletedProcess:
+        self._auto_mount(command, cwd)
         self._ensure_container()
         translated_cmd, translated_cwd = self._translate_command(command, cwd)
 
@@ -226,8 +298,12 @@ class FOAMRuntime:
             shell_cmd = f"cd {shlex.quote(translated_cwd)} && {shell_cmd}"
 
         docker_cmd = [
-            "docker", "exec", self._container_id,
-            "bash", "-c", shell_cmd,
+            "docker",
+            "exec",
+            self._container_id,
+            "bash",
+            "-c",
+            shell_cmd,
         ]
 
         logging.debug(f"Docker exec: {shell_cmd}")
@@ -243,8 +319,9 @@ class FOAMRuntime:
         Only valid in Docker mode. Native mode should read FOAM_TUTORIALS
         from the environment directly (handled by FOAM.tutorials()).
         """
-        assert self.mode != FOAMRuntime.Mode.NATIVE, \
+        assert self.mode != FOAMRuntime.Mode.NATIVE, (
             "_foam_tutorials_path() should not be called in native mode"
+        )
 
         if self._cached_foam_tutorials:
             return self._cached_foam_tutorials
@@ -252,10 +329,16 @@ class FOAMRuntime:
         self._ensure_container()
         result = subprocess.run(
             [
-                "docker", "exec", self._container_id,
-                "bash", "-c", "echo $FOAM_TUTORIALS",
+                "docker",
+                "exec",
+                self._container_id,
+                "bash",
+                "-c",
+                "echo $FOAM_TUTORIALS",
             ],
-            stdout=PIPE, stderr=PIPE, text=True,
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -278,13 +361,13 @@ class FOAMRuntime:
         self._ensure_container()
         result = subprocess.run(
             ["docker", "cp", f"{self._container_id}:{remote_path}", str(local_path)],
-            stdout=PIPE, stderr=PIPE, text=True,
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
         )
 
         if result.returncode != 0:
-            raise RuntimeError(
-                f"Failed to transfer {remote_path}: {result.stderr}"
-            )
+            raise RuntimeError(f"Failed to transfer {remote_path}: {result.stderr}")
 
     # ------------------------------------------------------------------
     # Path translation
@@ -321,7 +404,6 @@ class FOAMRuntime:
 
         translated_cwd = self._translate_path(cwd) if cwd else None
         return translated_cmd, translated_cwd
-
 
 
 _runtime: FOAMRuntime | None = None

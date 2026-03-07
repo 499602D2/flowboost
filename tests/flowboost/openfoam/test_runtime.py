@@ -4,12 +4,15 @@ from unittest.mock import patch
 
 import pytest
 
-from flowboost.openfoam.runtime import FOAMRuntime, get_runtime, reset_runtime
+from flowboost.openfoam.runtime import FOAMRuntime, get_runtime
 
 
 class TestDetectMode:
     def test_native_when_foam_inst_dir_set(self):
-        with patch.dict(os.environ, {"FOAM_INST_DIR": "/opt/openfoam", "FLOWBOOST_FOAM_MODE": "auto"}):
+        with patch.dict(
+            os.environ,
+            {"FOAM_INST_DIR": "/opt/openfoam", "FLOWBOOST_FOAM_MODE": "auto"},
+        ):
             runtime = FOAMRuntime()
             assert runtime.mode == FOAMRuntime.Mode.NATIVE
 
@@ -119,9 +122,69 @@ class TestRunRouting:
         assert "echo" not in FOAMRuntime.FOAM_COMMANDS
 
 
+class TestContainer:
+    def _make_docker_runtime(self):
+        with (
+            patch.dict(os.environ, {"FLOWBOOST_FOAM_MODE": "docker"}, clear=False),
+            patch.object(FOAMRuntime, "_docker_available", return_value=True),
+        ):
+            return FOAMRuntime()
+
+    def test_container_starts_and_stops(self):
+        runtime = self._make_docker_runtime()
+        with (
+            patch.object(runtime, "_ensure_container") as mock_ensure,
+            patch.object(runtime, "_stop_container") as mock_stop,
+            patch.object(runtime, "_ensure_docker_image"),
+        ):
+            with runtime.container():
+                mock_ensure.assert_called_once()
+            mock_stop.assert_called_once()
+
+    def test_container_registers_mounts(self):
+        runtime = self._make_docker_runtime()
+        mount_a = Path("/tmp/work_a")
+        mount_b = Path("/tmp/work_b")
+
+        with (
+            patch.object(runtime, "_ensure_container"),
+            patch.object(runtime, "_stop_container"),
+        ):
+            with runtime.container(mount_a, mount_b):
+                assert len(runtime._mounts) == 2
+                host_roots = [m[0] for m in runtime._mounts]
+                assert mount_a.resolve() in host_roots
+                assert mount_b.resolve() in host_roots
+
+    def test_container_noop_in_native_mode(self):
+        with patch.dict(os.environ, {"FOAM_INST_DIR": "/opt/openfoam"}):
+            runtime = FOAMRuntime()
+
+        with (
+            patch.object(runtime, "_ensure_container") as mock_ensure,
+            patch.object(runtime, "_stop_container") as mock_stop,
+        ):
+            with runtime.container() as rt:
+                assert rt is runtime
+                mock_ensure.assert_not_called()
+            mock_stop.assert_called_once()
+
+    def test_container_stops_on_exception(self):
+        runtime = self._make_docker_runtime()
+        with (
+            patch.object(runtime, "_ensure_container"),
+            patch.object(runtime, "_stop_container") as mock_stop,
+        ):
+            with pytest.raises(ValueError):
+                with runtime.container():
+                    raise ValueError("boom")
+            mock_stop.assert_called_once()
+
+
 class TestSingleton:
     def test_get_runtime_returns_same_instance(self):
         import flowboost.openfoam.runtime as rt
+
         saved = rt._runtime
         rt._runtime = None
         try:
@@ -134,6 +197,7 @@ class TestSingleton:
 
     def test_reset_runtime_clears(self):
         import flowboost.openfoam.runtime as rt
+
         saved = rt._runtime
         rt._runtime = None
         try:

@@ -35,14 +35,19 @@ class DockerLocal(Manager):
         get_runtime()._ensure_docker_image()
 
         cmd = [
-            "docker", "run", "-d",
-            "--name", job_name,
-            "-v", f"{submission_cwd}:/work",
-            "-w", "/work",
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            job_name,
+            "-v",
+            f"{submission_cwd}:/work",
+            "-w",
+            "/work",
         ]
         for key, value in script_args.items():
             cmd.extend(["-e", f"{key}={value}"])
-        cmd.extend([self._docker_image, "bash", script.name])
+        cmd.extend([self._docker_image, "bash", f"./{script.name}"])
 
         result = subprocess.run(cmd, stdout=PIPE, stderr=PIPE, text=True)
         if result.returncode != 0:
@@ -55,12 +60,17 @@ class DockerLocal(Manager):
         try:
             result = subprocess.run(
                 ["docker", "stop", "-t", "10", job_id],
-                stdout=PIPE, stderr=PIPE, text=True, timeout=20,
+                stdout=PIPE,
+                stderr=PIPE,
+                text=True,
+                timeout=20,
             )
         except subprocess.TimeoutExpired:
             subprocess.run(
                 ["docker", "kill", job_id],
-                stdout=PIPE, stderr=PIPE, timeout=10,
+                stdout=PIPE,
+                stderr=PIPE,
+                timeout=10,
             )
             result = None
 
@@ -71,7 +81,10 @@ class DockerLocal(Manager):
         try:
             result = subprocess.run(
                 ["docker", "inspect", "--format", "{{.State.Running}}", job_id],
-                stdout=PIPE, stderr=PIPE, text=True, timeout=10,
+                stdout=PIPE,
+                stderr=PIPE,
+                text=True,
+                timeout=10,
             )
         except subprocess.TimeoutExpired:
             return False
