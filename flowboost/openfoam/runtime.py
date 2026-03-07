@@ -12,7 +12,7 @@ DOCKER_IMAGE = "flowboost/openfoam:13"
 DOCKERFILE_DIR = Path(__file__).resolve().parent / "docker"
 
 
-class FoamRuntime:
+class FOAMRuntime:
     """Decides how to execute OpenFOAM CLI commands: natively or via Docker.
 
     In Docker mode, a single persistent container is started on first use
@@ -39,24 +39,24 @@ class FoamRuntime:
         self._container_id: str | None = None
         self.mode = self._detect_mode()
 
-    def _detect_mode(self) -> "FoamRuntime.Mode":
+    def _detect_mode(self) -> "FOAMRuntime.Mode":
         forced = os.environ.get("FLOWBOOST_FOAM_MODE", "auto")
 
         if forced == "native":
-            return FoamRuntime.Mode.NATIVE
+            return FOAMRuntime.Mode.NATIVE
         if forced == "docker":
             if not self._docker_available():
                 raise RuntimeError(
                     "FLOWBOOST_FOAM_MODE=docker but Docker is not available"
                 )
-            return FoamRuntime.Mode.DOCKER
+            return FOAMRuntime.Mode.DOCKER
 
         # Auto-detect: native → docker → error
         if os.environ.get("FOAM_INST_DIR"):
-            return FoamRuntime.Mode.NATIVE
+            return FOAMRuntime.Mode.NATIVE
 
         if self._docker_available():
-            return FoamRuntime.Mode.DOCKER
+            return FOAMRuntime.Mode.DOCKER
 
         raise RuntimeError(
             "OpenFOAM not available: no native install (FOAM_INST_DIR unset) "
@@ -116,9 +116,9 @@ class FoamRuntime:
 
     def is_available(self) -> bool:
         """Check if this runtime can actually execute FOAM commands."""
-        if self.mode == FoamRuntime.Mode.NATIVE:
+        if self.mode == FOAMRuntime.Mode.NATIVE:
             return True
-        if self.mode == FoamRuntime.Mode.DOCKER:
+        if self.mode == FOAMRuntime.Mode.DOCKER:
             # Available if image exists or can be built
             return self._docker_image_available() or DOCKERFILE_DIR.is_dir()
         return False
@@ -209,7 +209,7 @@ class FoamRuntime:
         """Execute a command, routing FOAM commands through Docker if needed."""
         cmd_name = Path(command[0]).name if command else ""
 
-        if self.mode == FoamRuntime.Mode.NATIVE or cmd_name not in self.FOAM_COMMANDS:
+        if self.mode == FOAMRuntime.Mode.NATIVE or cmd_name not in self.FOAM_COMMANDS:
             return subprocess.run(command, stdout=PIPE, stderr=PIPE, cwd=cwd, text=True)
 
         return self._docker_exec(command, cwd)
@@ -243,7 +243,7 @@ class FoamRuntime:
         Only valid in Docker mode. Native mode should read FOAM_TUTORIALS
         from the environment directly (handled by FOAM.tutorials()).
         """
-        assert self.mode != FoamRuntime.Mode.NATIVE, \
+        assert self.mode != FOAMRuntime.Mode.NATIVE, \
             "_foam_tutorials_path() should not be called in native mode"
 
         if self._cached_foam_tutorials:
@@ -271,7 +271,7 @@ class FoamRuntime:
 
     def transfer_file(self, remote_path: str, local_path: Path):
         """Copy a file from the container to the host."""
-        if self.mode == FoamRuntime.Mode.NATIVE:
+        if self.mode == FOAMRuntime.Mode.NATIVE:
             shutil.copy2(remote_path, local_path)
             return
 
@@ -324,13 +324,13 @@ class FoamRuntime:
 
 
 
-_runtime: FoamRuntime | None = None
+_runtime: FOAMRuntime | None = None
 
 
-def get_runtime() -> FoamRuntime:
+def get_runtime() -> FOAMRuntime:
     global _runtime
     if _runtime is None:
-        _runtime = FoamRuntime()
+        _runtime = FOAMRuntime()
     return _runtime
 
 

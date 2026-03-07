@@ -4,7 +4,7 @@ import pytest
 
 from flowboost.openfoam.case import Case
 from flowboost.openfoam.interface import FOAM
-from flowboost.openfoam.runtime import FoamRuntime, get_runtime
+from flowboost.openfoam.runtime import FOAMRuntime, get_runtime
 
 
 @pytest.fixture(scope="session")
@@ -15,7 +15,7 @@ def data_dir():
 
 @pytest.fixture(scope="session")
 def foam_runtime(tmp_path_factory):
-    """Session-scoped fixture that provides a configured FoamRuntime."""
+    """Session-scoped fixture that provides a configured FOAMRuntime."""
     try:
         runtime = get_runtime()
     except RuntimeError:
@@ -26,7 +26,7 @@ def foam_runtime(tmp_path_factory):
         pytest.skip("OpenFOAM runtime not usable (Docker image missing or cannot be built)")
         return
 
-    if runtime.mode != FoamRuntime.Mode.NATIVE:
+    if runtime.mode != FOAMRuntime.Mode.NATIVE:
         # Mount tmp dir for test output
         mount_root = tmp_path_factory.getbasetemp()
         runtime.add_mount(mount_root, "/work")

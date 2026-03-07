@@ -6,7 +6,7 @@ import pytest
 
 from flowboost.openfoam.dictionary import Dictionary, DictionaryReader
 from flowboost.openfoam.interface import FOAM
-from flowboost.openfoam.runtime import FoamRuntime, get_runtime
+from flowboost.openfoam.runtime import FOAMRuntime, get_runtime
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def tutorial_dictionary_reader(foam_in_env, tmp_path) -> Callable[[str], Diction
     def _reader(path: str) -> DictionaryReader:
         runtime = get_runtime()
 
-        if runtime.mode == FoamRuntime.Mode.NATIVE:
+        if runtime.mode == FOAMRuntime.Mode.NATIVE:
             return DictionaryReader(FOAM.tutorials() / path)
 
         # Non-native: copy the tutorial file from the VM/container to tmp_path
@@ -37,7 +37,7 @@ def tutorial_dictionary_reader(foam_in_env, tmp_path) -> Callable[[str], Diction
 def foam_tutorial_dict_paths(foam_in_env) -> Generator[Path, None, None]:
     """Generates FOAM dictionary paths from tutorials folder."""
     runtime = get_runtime()
-    if runtime.mode != FoamRuntime.Mode.NATIVE:
+    if runtime.mode != FOAMRuntime.Mode.NATIVE:
         pytest.skip("Requires native OpenFOAM (host-side directory traversal)")
 
     tutorials_path = FOAM.tutorials()

@@ -4,71 +4,71 @@ from unittest.mock import patch
 
 import pytest
 
-from flowboost.openfoam.runtime import FoamRuntime, get_runtime, reset_runtime
+from flowboost.openfoam.runtime import FOAMRuntime, get_runtime, reset_runtime
 
 
 class TestDetectMode:
     def test_native_when_foam_inst_dir_set(self):
         with patch.dict(os.environ, {"FOAM_INST_DIR": "/opt/openfoam", "FLOWBOOST_FOAM_MODE": "auto"}):
-            runtime = FoamRuntime()
-            assert runtime.mode == FoamRuntime.Mode.NATIVE
+            runtime = FOAMRuntime()
+            assert runtime.mode == FOAMRuntime.Mode.NATIVE
 
     def test_forced_native(self):
         with patch.dict(os.environ, {"FLOWBOOST_FOAM_MODE": "native"}, clear=False):
-            runtime = FoamRuntime()
-            assert runtime.mode == FoamRuntime.Mode.NATIVE
+            runtime = FOAMRuntime()
+            assert runtime.mode == FOAMRuntime.Mode.NATIVE
 
     def test_forced_docker_without_docker_raises(self):
         with (
             patch.dict(os.environ, {"FLOWBOOST_FOAM_MODE": "docker"}, clear=False),
-            patch.object(FoamRuntime, "_docker_available", return_value=False),
+            patch.object(FOAMRuntime, "_docker_available", return_value=False),
         ):
             with pytest.raises(RuntimeError, match="Docker is not available"):
-                FoamRuntime()
+                FOAMRuntime()
 
     def test_forced_docker_with_docker(self):
         with (
             patch.dict(os.environ, {"FLOWBOOST_FOAM_MODE": "docker"}, clear=False),
-            patch.object(FoamRuntime, "_docker_available", return_value=True),
+            patch.object(FOAMRuntime, "_docker_available", return_value=True),
         ):
-            runtime = FoamRuntime()
-            assert runtime.mode == FoamRuntime.Mode.DOCKER
+            runtime = FOAMRuntime()
+            assert runtime.mode == FOAMRuntime.Mode.DOCKER
 
     def test_auto_falls_to_docker_when_no_foam(self):
         with (
             patch.dict(os.environ, {"FLOWBOOST_FOAM_MODE": "auto"}, clear=False),
-            patch.object(FoamRuntime, "_docker_available", return_value=True),
+            patch.object(FOAMRuntime, "_docker_available", return_value=True),
         ):
             os.environ.pop("FOAM_INST_DIR", None)
-            runtime = FoamRuntime()
-            assert runtime.mode == FoamRuntime.Mode.DOCKER
+            runtime = FOAMRuntime()
+            assert runtime.mode == FOAMRuntime.Mode.DOCKER
 
     def test_auto_raises_when_nothing_available(self):
         with (
             patch.dict(os.environ, {"FLOWBOOST_FOAM_MODE": "auto"}, clear=False),
-            patch.object(FoamRuntime, "_docker_available", return_value=False),
+            patch.object(FOAMRuntime, "_docker_available", return_value=False),
         ):
             os.environ.pop("FOAM_INST_DIR", None)
             with pytest.raises(RuntimeError, match="OpenFOAM not available"):
-                FoamRuntime()
+                FOAMRuntime()
 
 
 class TestTranslatePath:
     def test_relative_path_unchanged(self):
         with patch.dict(os.environ, {"FOAM_INST_DIR": "/opt/openfoam"}):
-            runtime = FoamRuntime()
+            runtime = FOAMRuntime()
         assert runtime._translate_path("constant/U") == "constant/U"
 
     def test_absolute_under_mount(self):
         with patch.dict(os.environ, {"FOAM_INST_DIR": "/opt/openfoam"}):
-            runtime = FoamRuntime()
+            runtime = FOAMRuntime()
         runtime.add_mount(Path("/tmp/cases"), "/work")
         result = runtime._translate_path("/tmp/cases/mycase/0/U")
         assert result == "/work/mycase/0/U"
 
     def test_absolute_not_under_mount_passes_through(self):
         with patch.dict(os.environ, {"FOAM_INST_DIR": "/opt/openfoam"}):
-            runtime = FoamRuntime()
+            runtime = FOAMRuntime()
         runtime.add_mount(Path("/tmp/cases"), "/work")
         result = runtime._translate_path("/opt/openfoam/tutorials/X/Y")
         assert result == "/opt/openfoam/tutorials/X/Y"
@@ -77,7 +77,7 @@ class TestTranslatePath:
 class TestTranslateCommand:
     def test_foam_command_args_translated(self):
         with patch.dict(os.environ, {"FOAM_INST_DIR": "/opt/openfoam"}):
-            runtime = FoamRuntime()
+            runtime = FOAMRuntime()
         runtime.add_mount(Path("/tmp/cases"), "/work")
 
         cmd = ["foamDictionary", "/tmp/cases/mycase/constant/U", "-entry", "inlet"]
@@ -90,7 +90,7 @@ class TestTranslateCommand:
 
     def test_cwd_translated(self):
         with patch.dict(os.environ, {"FOAM_INST_DIR": "/opt/openfoam"}):
-            runtime = FoamRuntime()
+            runtime = FOAMRuntime()
         runtime.add_mount(Path("/tmp/cases"), "/work")
 
         _, translated_cwd = runtime._translate_command(
@@ -104,9 +104,9 @@ class TestRunRouting:
         """Non-FOAM commands should bypass Docker even in DOCKER mode."""
         with (
             patch.dict(os.environ, {"FLOWBOOST_FOAM_MODE": "docker"}, clear=False),
-            patch.object(FoamRuntime, "_docker_available", return_value=True),
+            patch.object(FOAMRuntime, "_docker_available", return_value=True),
         ):
-            runtime = FoamRuntime()
+            runtime = FOAMRuntime()
 
         result = runtime.run(["echo", "hello"])
         assert result.returncode == 0
@@ -114,9 +114,9 @@ class TestRunRouting:
 
     def test_foam_command_detected(self):
         """FOAM commands should be recognized by name."""
-        assert "foamDictionary" in FoamRuntime.FOAM_COMMANDS
-        assert "foamCloneCase" in FoamRuntime.FOAM_COMMANDS
-        assert "echo" not in FoamRuntime.FOAM_COMMANDS
+        assert "foamDictionary" in FOAMRuntime.FOAM_COMMANDS
+        assert "foamCloneCase" in FOAMRuntime.FOAM_COMMANDS
+        assert "echo" not in FOAMRuntime.FOAM_COMMANDS
 
 
 class TestSingleton:

@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
-from flowboost.openfoam.runtime import FoamRuntime, get_runtime
+from flowboost.openfoam.runtime import FOAMRuntime, get_runtime
 
 
 def openfoam_in_env(func):
@@ -19,7 +19,7 @@ def openfoam_in_env(func):
 class FOAM:
     @staticmethod
     def source(path: str):
-        if get_runtime().mode != FoamRuntime.Mode.NATIVE:
+        if get_runtime().mode != FOAMRuntime.Mode.NATIVE:
             return  # Container has its own environment
 
         command = f"source {path} && env"
@@ -38,7 +38,7 @@ class FOAM:
     @openfoam_in_env
     def tutorials() -> str | Path:
         runtime = get_runtime()
-        if runtime.mode != FoamRuntime.Mode.NATIVE:
+        if runtime.mode != FOAMRuntime.Mode.NATIVE:
             return runtime._foam_tutorials_path()
 
         tutorials_path = os.environ.get("FOAM_TUTORIALS")
@@ -64,7 +64,7 @@ class FOAM:
         tutorials = FOAM.tutorials()
         runtime = get_runtime()
 
-        if runtime.mode != FoamRuntime.Mode.NATIVE:
+        if runtime.mode != FOAMRuntime.Mode.NATIVE:
             # tutorials is a container-internal path string
             return f"{tutorials}/{relative_path}"
 
