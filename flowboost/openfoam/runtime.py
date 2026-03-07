@@ -148,6 +148,9 @@ class FOAMRuntime:
         self._ensure_docker_image()
 
         create_cmd = ["docker", "create", "--rm", "-i"]
+        # Run as host user so bind-mounted files aren't owned by root
+        if os.name != "nt":
+            create_cmd.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
         for host_root, container_root in self._mounts:
             create_cmd.extend(["-v", f"{host_root}:{container_root}"])
         create_cmd.extend([self._docker_image, "sleep", "infinity"])
@@ -169,9 +172,7 @@ class FOAMRuntime:
         )
         if result.returncode != 0:
             # Clean up the created-but-not-started container
-            subprocess.run(
-                ["docker", "rm", cid], stdout=PIPE, stderr=PIPE, timeout=10
-            )
+            subprocess.run(["docker", "rm", cid], stdout=PIPE, stderr=PIPE, timeout=10)
             raise RuntimeError(f"Failed to start container: {result.stderr}")
 
         self._container_id = cid

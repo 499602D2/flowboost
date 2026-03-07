@@ -1,4 +1,5 @@
 import logging
+import os
 import subprocess
 from pathlib import Path
 from subprocess import PIPE
@@ -39,11 +40,18 @@ class DockerLocal(Manager):
             "-d",
             "--name",
             job_name,
-            "-v",
-            f"{submission_cwd}:/work",
-            "-w",
-            "/work",
         ]
+        # Run as host user so bind-mounted files aren't owned by root
+        if os.name != "nt":
+            cmd.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+        cmd.extend(
+            [
+                "-v",
+                f"{submission_cwd}:/work",
+                "-w",
+                "/work",
+            ]
+        )
         for key, value in script_args.items():
             cmd.extend(["-e", f"{key}={value}"])
         cmd.extend([self._docker_image, "bash", f"./{script.name}"])
