@@ -11,7 +11,7 @@ from typing import Any, Optional
 from flowboost.openfoam.case import Case, Status
 from flowboost.utilities.time import td_format
 
-SUPPORTED_SCHEDULERS = ("Local", "SGE", "Slurm")
+SUPPORTED_SCHEDULERS = ("Local", "SGE", "Slurm", "DockerLocal")
 
 
 class Manager(ABC):
@@ -136,6 +136,7 @@ class Manager(ABC):
         Returns:
             Manager: A job manager implementing `Manager` interface
         """
+        from flowboost.manager.interfaces.docker_local import DockerLocal
         from flowboost.manager.interfaces.local import Local
         from flowboost.manager.interfaces.sge import SGE
         from flowboost.manager.interfaces.slurm import Slurm
@@ -147,6 +148,8 @@ class Manager(ABC):
                 manager = SGE(wdir=wdir, job_limit=job_limit)
             case "slurm":
                 manager = Slurm(wdir=wdir, job_limit=job_limit)
+            case "dockerlocal":
+                manager = DockerLocal(wdir=wdir, job_limit=job_limit)
             case _:
                 raise NotImplementedError(
                     f"Scheduler '{scheduler}' not in {SUPPORTED_SCHEDULERS}"
