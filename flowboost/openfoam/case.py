@@ -118,7 +118,7 @@ class Case:
         Returns:
             Case: Object representing the new case
         """
-        new_case_path = Path(clone_to)
+        new_case_path = Path(clone_to).resolve()
         if new_case_path.exists():
             raise FileExistsError(f"Case directory already exists: '{new_case_path}'")
 
@@ -228,7 +228,7 @@ class Case:
         # Get path
         tutorial_path = FOAM.tutorial(relative_path=tutorial)
 
-        new_case_dir = Path(new_case_dir)
+        new_case_dir = Path(new_case_dir).resolve()
         if new_case_dir.exists():
             logging.warning(
                 f"Directory already exists: returning existing Case [{new_case_dir}]"
