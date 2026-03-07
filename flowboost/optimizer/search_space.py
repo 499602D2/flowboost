@@ -6,6 +6,10 @@ from flowboost.openfoam.dictionary import DictionaryLink
 
 class Dimension:
     def __init__(self, name: str, type: Literal["range", "fixed", "choice"]):
+        if " " in name:
+            raise ValueError(
+                f"Dimension name cannot contain spaces: '{name}'"
+            )
         self.name = name
         self.type = type
         self.value_type: Optional[str] = None

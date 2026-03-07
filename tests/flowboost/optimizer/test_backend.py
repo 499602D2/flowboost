@@ -15,7 +15,7 @@ def Ax_backend() -> AxBackend:
 
     # Add objective
     objective = Objective(
-        name="Test Objective",
+        name="test_objective",
         minimize=True,
         objective_function=lambda x: 1
     )
@@ -26,7 +26,7 @@ def Ax_backend() -> AxBackend:
 
     # Add dimension for the dictionary entry
     dim = Dimension.range(
-        name="Test Dim",
+        name="test_dim",
         link=dict_link,
         lower=1e-5,
         upper=1e-1,
@@ -38,7 +38,7 @@ def Ax_backend() -> AxBackend:
 
     # Add dimension for the dictionary entry
     dim = Dimension.range(
-        name="Test Dim",
+        name="test_dim",
         link=dict_link,
         lower=1e-5,
         upper=1e-1,

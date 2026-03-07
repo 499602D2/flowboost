@@ -1,7 +1,7 @@
 [project]
 name = "flowboost"
-version = "0.2.1"
-description = "Multi-objective optimization framework for OpenFOAM"
+version = "0.2.2"
+description = "Multi-objective Bayesian optimization library for OpenFOAM"
 license = "Apache-2.0"
 authors = [
     { name = "Daniel Virokannas", email = "46869890+499602D2@users.noreply.github.com" },
@@ -30,10 +30,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
 ]
 dependencies = [
-    "ax-platform>=0.3.7",
+    "ax-platform>=1.0",
     "coloredlogs>=15",
     "pandas>=2.2",
-    "polars>=0.20",
+    "polars>=1.11",
     "psutil>=5.9",
     "pyarrow>=15",
     "scikit-learn>=1.4",

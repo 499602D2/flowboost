@@ -309,7 +309,7 @@ class Data:
                 separator=separator,
                 new_columns=cols,
                 low_memory=self.low_memory,
-            ).collect(streaming=self.lazy_backend)
+            ).collect(**({"engine": "streaming"} if self.lazy_backend else {}))
 
         match self.dataframe_format:
             case Backend.PANDAS:

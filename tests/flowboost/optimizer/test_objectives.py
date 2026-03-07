@@ -14,19 +14,19 @@ def max_temp_objective(case: Case) -> int:
 def test_objective_initialization():
     """Test initialization without changes, as it doesn't involve function execution."""
     objective = Objective(
-        name="Test Objective",
+        name="test_objective",
         minimize=True,
         objective_function=max_temp_objective,
         normalization_step="min-max",
     )
-    assert objective.name == "Test Objective"
+    assert objective.name == "test_objective"
     assert objective.minimize is True
     assert callable(objective.objective_function)
 
 
 def test_evaluate_method(test_case):
     objective = Objective(
-        name="Test Evaluate", minimize=True, objective_function=max_temp_objective
+        name="test_evaluate", minimize=True, objective_function=max_temp_objective
     )
     result = objective.evaluate(test_case)
     assert result == 1955, f"Result {result} != 1955"
@@ -34,7 +34,7 @@ def test_evaluate_method(test_case):
 
 def test_normalization_step_addition():
     objective = Objective(
-        name="Test Normalization",
+        name="test_normalization",
         minimize=True,
         objective_function=max_temp_objective,
         normalization_step="min-max",
@@ -46,7 +46,7 @@ def test_normalization_step_addition():
 def test_data_retrieval_post_processing(test_case):
     """Test if data retrieval and post-processing work as expected"""
     objective = Objective(
-        name="Data Retrieval Test", minimize=True, objective_function=max_temp_objective
+        name="data_retrieval_test", minimize=True, objective_function=max_temp_objective
     )
     objective.evaluate(test_case)  # No need to patch; controlled by mock_case
     out = objective.data_for_case(test_case, post_processed=False)

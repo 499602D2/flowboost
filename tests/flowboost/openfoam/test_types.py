@@ -89,11 +89,13 @@ def test_try_parse_scalar(input_str, expected_output):
     result = FOAMType.try_parse_scalar(input_str)
 
     if result and input_str.lower() == "nan":
-        assert math.isnan(result), f"Failed on '{input_str}': expected {
-                expected_output}, got {result}"
+        assert math.isnan(result), (
+            f"Failed on '{input_str}': expected {expected_output}, got {result}"
+        )
     else:
-        assert result == expected_output, f"Failed on '{input_str}': expected {
-                expected_output}, got {result}"
+        assert result == expected_output, (
+            f"Failed on '{input_str}': expected {expected_output}, got {result}"
+        )
 
 
 def test_timing():
