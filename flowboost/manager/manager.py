@@ -15,6 +15,9 @@ SUPPORTED_SCHEDULERS = ("Local", "SGE", "Slurm", "DockerLocal")
 
 
 class Manager(ABC):
+    """Abstract job manager for submitting, monitoring, and cancelling
+    simulation jobs. Concrete implementations: Local, DockerLocal, SGE, Slurm."""
+
     def __init__(self, wdir: Path | str, job_limit: int) -> None:
         """
         An abstract job manager class that can be easily extended.
@@ -160,7 +163,12 @@ class Manager(ABC):
     def free_slots(self) -> int:
         return self.job_limit - len(self._get_running_jobs())
 
-    def submit_case(self, case: Case, script_args: dict[str, Any] = {}, script_name: Optional[str] = None) -> bool:
+    def submit_case(
+        self,
+        case: Case,
+        script_args: dict[str, Any] = {},
+        script_name: Optional[str] = None,
+    ) -> bool:
         """
         Public interface for submitting a Case to the execution environment.
 
@@ -295,9 +303,7 @@ class Manager(ABC):
             return False
 
         if not job.wdir.exists():
-            logging.error(
-                f"Source directory does not exist, cannot move: {job.wdir}"
-            )
+            logging.error(f"Source directory does not exist, cannot move: {job.wdir}")
             return False
 
         # Path(dest).mkdir(parents=True, exist_ok=True)

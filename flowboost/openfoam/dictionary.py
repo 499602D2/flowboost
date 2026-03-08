@@ -460,10 +460,18 @@ class Entry:
             # Only a value is being written
             foam_value = FOAMType.to_FOAM(new_value)
 
+            # Ensure lazy-loaded name/dimension are populated before using them
+            try:
+                name = self.name
+                dimension = self.dimension
+            except (ValueError, TypeError):
+                name = None
+                dimension = None
+
             # If the entry was dimensioned, re-add name and dimension
             new_raw_val = (
-                f"{self._name+' ' if self._name else ''}"
-                + f"{self._dimension+' ' if self._dimension else ''}"
+                f"{name + ' ' if name else ''}"
+                + f"{dimension + ' ' if dimension else ''}"
                 + foam_value
             )
 

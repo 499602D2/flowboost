@@ -5,21 +5,17 @@ This script demonstrates a multi-parameter Bayesian optimization workflow
 for maximizing lift coefficient on a NACA0012 airfoil by varying angle of
 attack and freestream velocity.
 """
-from pathlib import Path
+
 import warnings
+from pathlib import Path
 
 import coloredlogs
 import polars as pl
 
-from flowboost.manager.manager import Manager
-from flowboost.openfoam.case import Case
-from flowboost.openfoam.dictionary import Dictionary
-from flowboost.optimizer.objectives import Objective
-from flowboost.optimizer.search_space import Dimension
-from flowboost.session.session import Session
+from flowboost import Case, Dictionary, Dimension, Manager, Objective, Session
 
 # Suppress FutureWarnings from Ax library
-warnings.filterwarnings('ignore', category=FutureWarning, module='ax.core.data')
+warnings.filterwarnings("ignore", category=FutureWarning, module="ax.core.data")
 
 
 def max_lift_drag_objective(case: Case):
@@ -41,7 +37,7 @@ def max_lift_drag_objective(case: Case):
     last_cl = dataframe.select(pl.last("Cl")).item()
     last_cd = dataframe.select(pl.last("Cd")).item()
 
-    return last_cl/last_cd
+    return last_cl / last_cd
 
 
 if __name__ == "__main__":
@@ -53,13 +49,14 @@ if __name__ == "__main__":
         name="aerofoilNACA0012Steady",
         data_dir=data_dir,
         clone_method="copy",
-        max_evaluations=50
+        max_evaluations=50,
     )
-
 
     # Define a template case
     case_dir = Path(data_dir, "aerofoilNACA0012Steady_template")
-    naca_case = Case.from_tutorial("fluid/aerofoilNACA0012Steady", case_dir, method="copy")
+    naca_case = Case.from_tutorial(
+        "fluid/aerofoilNACA0012Steady", case_dir, method="copy"
+    )
 
     # Set writeInterval to 5000 to avoid writing excessive fields
     control_dict = naca_case.dictionary("system/controlDict")
@@ -84,20 +81,14 @@ if __name__ == "__main__":
     ENTRY_PATH_AOA = "angleOfAttack"
     entry_link_aoa = Dictionary.link(DICT_FILE).entry(ENTRY_PATH_AOA)
     aoa_dim = Dimension.range(
-        name="angleOfAttack",
-        link=entry_link_aoa,
-        lower=-20,
-        upper=40,
-        log_scale=False
+        name="angleOfAttack", link=entry_link_aoa, lower=-20, upper=40, log_scale=False
     )
 
     # Speed dimension
     ENTRY_PATH_AOA = "speed"
     entry_link_speed = Dictionary.link(DICT_FILE).entry(ENTRY_PATH_AOA)
     speed_dim = Dimension.choice(
-        name="speed",
-        link=entry_link_speed,
-        choices=[10, 15, 20]
+        name="speed", link=entry_link_speed, choices=[10, 15, 20]
     )
 
     session.backend.set_search_space([aoa_dim, speed_dim])
@@ -107,9 +98,7 @@ if __name__ == "__main__":
 
     if not session.job_manager:
         session.job_manager = Manager.create(
-            scheduler=scheduler,
-            wdir=session.data_dir,
-            job_limit=5
+            scheduler=scheduler, wdir=session.data_dir, job_limit=5
         )
 
     session.job_manager.monitoring_interval = 10

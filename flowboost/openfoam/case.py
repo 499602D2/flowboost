@@ -33,6 +33,9 @@ class Status(Enum):
 
 
 class Case:
+    """An OpenFOAM case directory. Provides dictionary access, cloning,
+    data loading, and metadata persistence."""
+
     def __init__(self, path: Path | str) -> None:
         """Create a new abstraction for an OpenFOAM case.
 
@@ -319,6 +322,19 @@ class Case:
         run_command(["listTimes", "-rm"], cwd=self.path)
 
         print(f"Removed time directories: {', '.join(dirs)}")
+
+    def run_command(self, command: list[str | Path], cwd: Path | None = None) -> str:
+        """Run a shell command in this case's directory.
+
+        Args:
+            command: Program and arguments, e.g. ``["foamToVTK"]`` or
+                ``["blockMesh", "-dict", "system/blockMeshDict"]``.
+            cwd: Working directory override. Defaults to the case directory.
+
+        Returns:
+            Command stdout.
+        """
+        return run_command(command, cwd=cwd or self.path)
 
     def dictionary(
         self, read_from: str | DictionaryLink

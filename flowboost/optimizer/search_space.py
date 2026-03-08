@@ -5,11 +5,12 @@ from flowboost.openfoam.dictionary import DictionaryLink
 
 
 class Dimension:
+    """A search space dimension linked to an OpenFOAM dictionary entry.
+    Create via ``Dimension.range()``, ``Dimension.fixed()``, or ``Dimension.choice()``."""
+
     def __init__(self, name: str, type: Literal["range", "fixed", "choice"]):
         if " " in name:
-            raise ValueError(
-                f"Dimension name cannot contain spaces: '{name}'"
-            )
+            raise ValueError(f"Dimension name cannot contain spaces: '{name}'")
         self.name = name
         self.type = type
         self.value_type: Optional[str] = None
@@ -26,7 +27,7 @@ class Dimension:
         self.linked_entry: Optional[DictionaryLink] = None
 
     def link_to(self, dictionary_link: DictionaryLink):
-        """ Links a search space dimension to a corresponding OpenFOAM
+        """Links a search space dimension to a corresponding OpenFOAM
         dictionary entry, which gets manipulated during the optimization
 
         Args:
@@ -38,14 +39,16 @@ class Dimension:
         logging.info(f"Linked dim='{self.name}' to {DictionaryLink}")
 
     @classmethod
-    def range(cls,
-              name: str,
-              link: DictionaryLink,
-              lower: Union[int, float],
-              upper: Union[int, float],
-              log_scale: bool = False,
-              dtype: Type = float,
-              digits: Optional[int] = None) -> 'Dimension':
+    def range(
+        cls,
+        name: str,
+        link: DictionaryLink,
+        lower: Union[int, float],
+        upper: Union[int, float],
+        log_scale: bool = False,
+        dtype: Type = float,
+        digits: Optional[int] = None,
+    ) -> "Dimension":
         dim = cls(name, "range")
         dim.linked_entry = link
         dim.bounds = [lower, upper]
@@ -55,10 +58,9 @@ class Dimension:
         return dim
 
     @classmethod
-    def fixed(cls,
-              name: str,
-              link: DictionaryLink,
-              value: Union[int, float, str, bool]) -> 'Dimension':
+    def fixed(
+        cls, name: str, link: DictionaryLink, value: Union[int, float, str, bool]
+    ) -> "Dimension":
         dim = cls(name, "fixed")
         dim.linked_entry = link
         dim.values = [value]  # Using list to unify the handling of values
@@ -68,12 +70,14 @@ class Dimension:
         return dim
 
     @classmethod
-    def choice(cls,
-               name: str,
-               link: DictionaryLink,
-               choices: list[Union[int, float, str, bool]],
-               dtype: Optional[Type] = None,
-               is_ordered: bool = False) -> 'Dimension':
+    def choice(
+        cls,
+        name: str,
+        link: DictionaryLink,
+        choices: list[Union[int, float, str, bool]],
+        dtype: Optional[Type] = None,
+        is_ordered: bool = False,
+    ) -> "Dimension":
         dim = cls(name, "choice")
         dim.linked_entry = link
         dim.is_ordered = is_ordered
@@ -83,8 +87,7 @@ class Dimension:
             dtype = cls._infer_type(choices)
 
         # Ensure all choices match the determined dtype
-        dim.values = [cls._ensure_types_match(
-            choice, dtype) for choice in choices]
+        dim.values = [cls._ensure_types_match(choice, dtype) for choice in choices]
         dim.value_type = Dimension._get_value_type_str(dtype)
 
         return dim
@@ -133,16 +136,12 @@ class Dimension:
         """
         Converts a type (e.g., int, float, bool, str) to its string representation.
         """
-        type_map = {
-            int: "int",
-            float: "float",
-            bool: "bool",
-            str: "str"
-        }
+        type_map = {int: "int", float: "float", bool: "bool", str: "str"}
 
         # Check if the value_type is in the type_map and return its string repr
         if value_type in type_map:
             return type_map[value_type]
         else:
             raise ValueError(
-                f"Unsupported type {value_type}, must be (int, float, bool, str)")
+                f"Unsupported type {value_type}, must be (int, float, bool, str)"
+            )

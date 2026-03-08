@@ -9,6 +9,9 @@ from flowboost.openfoam.case import Case
 
 
 class Objective:
+    """A named optimization objective that evaluates a Case and returns a
+    scalar value. Supports minimization/maximization and optional normalization."""
+
     def __init__(
         self,
         name: str,
