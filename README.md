@@ -81,6 +81,36 @@ On first run in Docker mode, FlowBoost builds the `flowboost/openfoam:13` image 
 
 FlowBoost uses the [openfoam.org](https://openfoam.org/) lineage (not the ESI/openfoam.com fork) and has been tested with versions 11 and 13. The bundled Dockerfile targets OpenFOAM 13 on Ubuntu 24.04. Each OpenFOAM release is tied to a specific Ubuntu LTS, so Dockerfiles are per-version by design.
 
+### Using Docker mode
+
+In Docker mode, CLI tools like `foamDictionary` run inside a persistent container. This is automatic: `Case`, `Dictionary`, and other abstractions work the same way regardless of the mode (native, Docker).
+
+When running multiple OpenFOAM commands (e.g. reading dictionaries across many cases), use the `container()` context manager to keep a single container alive for the entire block:
+
+```python
+from flowboost import Case, foam_runtime
+
+workdir = Path("flowboost_data")
+
+with foam_runtime().container(workdir):
+    for case_dir in sorted(workdir.glob("case_*")):
+        case = Case(case_dir)
+        k = case.dictionary("0/k").entry("boundaryField/inlet/value").value
+        # All foamDictionary calls reuse the same container
+```
+
+Without `container()`, FlowBoost auto-mounts paths as needed, which may restart the container when new paths are encountered. Pre-mounting a parent directory (like the workdir above) avoids this.
+
+To run simulations locally in Docker, use the `DockerLocal` manager:
+
+```python
+from flowboost import Manager
+
+manager = Manager.create(scheduler="dockerlocal", wdir=data_dir, job_limit=2)
+```
+
+Each submitted case gets its own detached container with the case directory bind-mounted. See the `pitzDaily` example for a complete Docker-based workflow.
+
 ## GPU acceleration
 
 If your environment has a CUDA-compatible NVIDIA GPU, verify you have a recent CUDA Toolkit release. Otherwise, GPU acceleration for PyTorch will not be available. This is especially critical if you are using SAASBO for high-dimensional optimization tasks (≥20 dimensions).

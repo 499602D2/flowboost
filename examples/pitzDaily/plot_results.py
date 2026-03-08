@@ -19,10 +19,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from flowboost.openfoam.case import Case
-from flowboost.openfoam.data import Data
-from flowboost.openfoam.interface import run_command
-from flowboost.openfoam.runtime import get_runtime
+from flowboost import Case, foam_runtime
 
 
 def collect_results(workdir: Path) -> list[dict]:
@@ -43,15 +40,13 @@ def collect_results(workdir: Path) -> list[dict]:
             mount_root = mount_root.parent
 
     results = []
-    with get_runtime().container(mount_root):
+    with foam_runtime().container(mount_root):
         for case_dir in case_dirs:
-            d = Data(case_dir)
+            case = Case(case_dir)
             fo = "patchAverage(patch=inlet,fields=(pU))"
-            df = d.simple_function_object_reader(fo)
+            df = case.data.simple_function_object_reader(fo)
             if df is None or len(df) == 0:
                 continue
-
-            case = Case(case_dir)
             k = float(
                 str(case.dictionary("0/k").entry("boundaryField/inlet/value").value)
             )
@@ -125,14 +120,14 @@ def plot_pressure_field(case_dir: Path, out: Path):
         print("  Install with: uv add flowboost[viz]")
         return
 
-    case_dir = case_dir.resolve()
+    case = Case(case_dir.resolve())
 
     # Convert to VTK inside Docker
-    with get_runtime().container(case_dir):
-        run_command(["foamToVTK"], cwd=case_dir)
+    with foam_runtime().container(case.path):
+        case.run_command(["foamToVTK"])
 
     # Find the last timestep VTK file (highest index)
-    vtk_files = sorted(case_dir.glob("VTK/work_*.vtk"))
+    vtk_files = sorted(case.path.glob("VTK/work_*.vtk"))
     if not vtk_files:
         print("No VTK files found after foamToVTK")
         return
@@ -150,7 +145,7 @@ def plot_pressure_field(case_dir: Path, out: Path):
     ax.set_aspect("equal")
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
-    ax.set_title(f"Pressure field — {case_dir.name}")
+    ax.set_title(f"Pressure field — {case.name}")
     fig.colorbar(tc, ax=ax, label="p [Pa]")
     plt.tight_layout()
     fig.savefig(out, dpi=150)
