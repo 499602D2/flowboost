@@ -1,0 +1,16 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.5
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty (advisory)
+        entry: bash -c 'uv run ty check || true'
+        language: system
+        types: [python]
+        pass_filenames: false
+        verbose: true
