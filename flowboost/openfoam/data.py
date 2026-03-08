@@ -128,7 +128,10 @@ class Data:
         return list(filter(Path.is_dir, fo_folder.iterdir()))
 
     def simple_function_object_reader(
-        self, function_object_name: str, at_time: Optional[str] = None
+        self,
+        function_object_name: str,
+        at_time: Optional[str] = None,
+        backend: Optional[Literal["pandas", "polars"]] = None,
     ) -> Optional[pl.DataFrame]:
         """ Loads data for a function object in the simplest case, where the
         output only contains one time directory and one output file. If the
@@ -190,10 +193,14 @@ class Data:
                 f"Expected one file, found {len(files)} in '{function_object_name}/{time_dir}': use data.load_data()"
             )
 
-        return self.load_data(files[0])
+        return self.load_data(files[0], backend=backend)
 
     def load_data(
-        self, files: Union[Path, list[Path]], comment: str = "#", separator: str = "\t"
+        self,
+        files: Union[Path, list[Path]],
+        comment: str = "#",
+        separator: str = "\t",
+        backend: Optional[Literal["pandas", "polars"]] = None,
     ) -> pl.DataFrame:
         """
         Loads data from a single file or a list of files. If a list is
@@ -212,17 +219,21 @@ class Data:
             A DataFrame containing the data from the file(s). Type depends on \
                 Data.dataframe_format (Pandas or Polars).
         """
+        fmt = Backend(backend) if backend else self.dataframe_format
+
         if isinstance(files, Path):
             return self._read_fo_to_dataframe(
-                files, comment=comment, separator=separator
+                files, comment=comment, separator=separator, fmt=fmt
             )
 
         dfs = [
-            self._read_fo_to_dataframe(file, comment=comment, separator=separator)
+            self._read_fo_to_dataframe(
+                file, comment=comment, separator=separator, fmt=fmt
+            )
             for file in files
         ]
 
-        match self.dataframe_format:
+        match fmt:
             case Backend.PANDAS:
                 return pd.concat(dfs)
             case Backend.POLARS:
@@ -261,7 +272,9 @@ class Data:
             for i, line in enumerate(f):
                 if not line.startswith(comment):
                     if line and prev_line:
-                        return [col.strip() for col in prev_line.strip(comment).split(delim)]
+                        return [
+                            col.strip() for col in prev_line.strip(comment).split(delim)
+                        ]
                     else:
                         return None
 
@@ -282,7 +295,7 @@ class Data:
         return header_row_index
 
     def _read_fo_to_dataframe(
-        self, file: Path, comment="#", separator="\t"
+        self, file: Path, comment="#", separator="\t", fmt: Optional[Backend] = None
     ) -> pl.DataFrame:
         """Reads a function object output file to a dataframe according to
         the specified backend. Should not be used for fields, or files where
@@ -295,9 +308,14 @@ class Data:
         """
 
         def read_pandas(file) -> pd.DataFrame:
-            header = self._discover_file_header_index(file)
+            cols = self._discover_file_header(file, comment=comment, delim=separator)
             return pd.read_csv(
-                file, header=header, comment=comment, low_memory=self.low_memory
+                file,
+                comment=comment,
+                sep=separator,
+                header=None,
+                names=cols,
+                low_memory=self.low_memory,
             )
 
         def read_polars(file) -> pl.DataFrame:
@@ -311,12 +329,11 @@ class Data:
                 low_memory=self.low_memory,
             ).collect(**({"engine": "streaming"} if self.lazy_backend else {}))
 
-        match self.dataframe_format:
+        effective = fmt or self.dataframe_format
+        match effective:
             case Backend.PANDAS:
                 return read_pandas(file)
             case Backend.POLARS:
                 return read_polars(file)
             case _:
-                raise NotImplementedError(
-                    f"Backend '{self.dataframe_format}' not valid"
-                )
+                raise NotImplementedError(f"Backend '{effective}' not valid")
