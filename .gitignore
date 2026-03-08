@@ -5,6 +5,11 @@ flowboost_data
 # Other files
 TODO.md
 
+# Custom instruction files
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+
 # macOS
 .DS_Store
 
