@@ -17,6 +17,7 @@ FlowBoost is a highly configurable and extensible library for handling and optim
 The `examples/` directory contains code examples for simplified real-world scenarios:
 
 1. `aerofoilNACA0012Steady`: parameter optimization for a NACA 0012 aerofoil steady-state simulation
+2. `pitzDaily`: backward-facing step optimization using local Docker execution and the Pandas data backend
 
 By default, FlowBoost uses Ax's [Service API](https://ax.dev/) as its optimization backend. In practice, any optimizer can be used, as long as it conforms to the abstract `flowboost.optimizer.Backend` base class, which the backend interfaces in `flowboost.optimizer.interfaces` implement.
 
@@ -63,17 +64,26 @@ uv add flowboost[lts-cpu]
 
 This installs `polars-lts-cpu`, which is functionally identical but not as performant.
 
-## Development
+## OpenFOAM
 
-The project is packaged using [uv](https://docs.astral.sh/uv/). The code is linted and formatted using [Ruff](https://docs.astral.sh/ruff/).
+FlowBoost uses OpenFOAM in two ways:
 
-```shell
-uv sync
-uv run pytest
-```
+1. **Case setup** uses CLI tools like `foamDictionary` and `foamCloneCase` on the host machine.
+2. **Simulations** run wherever the `Manager` sends them: locally (`Local`, `DockerLocal`) or on a cluster (`SGE`, `Slurm`).
 
-### GPU acceleration
-If your environment has a CUDA-compatible NVIDIA GPU, you should verify you have a recent CUDA Toolkit release. Otherwise, GPU acceleration for PyTorch will not be available. This is especially critical if you are using SAASBO for high-dimensional optimization tasks (≥20 dimensions).
+The host always needs access to OpenFOAM CLI tools for case setup, even when simulations run elsewhere. On Linux, a native install works. On macOS and Windows, FlowBoost provides these tools transparently through Docker.
+
+- **Linux**: native OpenFOAM or Docker
+- **macOS**: Docker ([OrbStack](https://orbstack.dev/) recommended, Docker Desktop also works)
+- **Windows**: Docker (Docker Desktop). Not tested on Windows.
+
+On first run in Docker mode, FlowBoost builds the `flowboost/openfoam:13` image from the bundled Dockerfile. This is a one-time operation. To force a specific mode, set `FLOWBOOST_FOAM_MODE` to `native` or `docker`. To use a custom image, set `FLOWBOOST_FOAM_IMAGE`.
+
+FlowBoost uses the [openfoam.org](https://openfoam.org/) lineage (not the ESI/openfoam.com fork) and has been tested with versions 11 and 13. The bundled Dockerfile targets OpenFOAM 13 on Ubuntu 24.04. Each OpenFOAM release is tied to a specific Ubuntu LTS, so Dockerfiles are per-version by design.
+
+## GPU acceleration
+
+If your environment has a CUDA-compatible NVIDIA GPU, verify you have a recent CUDA Toolkit release. Otherwise, GPU acceleration for PyTorch will not be available. This is especially critical if you are using SAASBO for high-dimensional optimization tasks (≥20 dimensions).
 
 ```shell
 nvcc -V
@@ -82,10 +92,9 @@ nvcc -V
 python3 -c "import torch; print(torch.cuda.is_available())"
 ```
 
-### Testing
-Passing the full test suite requires OpenFOAM to be installed and sourced. FlowBoost has only been tested using the [openfoam.org](https://openfoam.org/) lineage (not the ESI/openfoam.com fork), specifically version 11.
+## Development
 
-If you wish to contribute code to the project, please ensure your contribution still passes the current test coverage.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tooling, and testing guidance.
 
 ## Acknowledgments
 The base functionality for FlowBoost was created as part of a mechanical engineering master's thesis at Aalto University, funded by Wärtsilä. Wärtsilä designs and manufactures marine combustion engines and energy solutions in Vaasa, Finland.
