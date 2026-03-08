@@ -125,9 +125,7 @@ class Case:
             raise FileExistsError(f"Case directory already exists: '{new_case_path}'")
 
         if method == "copy":
-            # Direct copy using cp -r
-            cmd = ["cp", "-r", str(self.path), str(new_case_path)]
-            run_command(cmd)
+            shutil.copytree(self.path, new_case_path)
         elif method == "foamCloneCase":
             assert FOAM.in_env()
             cmd = ["foamCloneCase", self.path, new_case_path]
