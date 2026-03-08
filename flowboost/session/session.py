@@ -19,6 +19,9 @@ from flowboost.optimizer.search_space import Dimension
 
 
 class Session:
+    """Top-level orchestrator that ties together a template Case, optimizer
+    Backend, and job Manager to run an optimization loop."""
+
     def __init__(
         self,
         name: str,
@@ -237,7 +240,9 @@ class Session:
             new_cases = self.loop_optimizer_once(num_new_cases=free_slots)
 
             for case in new_cases:
-                self.job_manager.submit_case(case, script_name=self.submission_script_name)
+                self.job_manager.submit_case(
+                    case, script_name=self.submission_script_name
+                )
 
             # Write designs log and print all designs after submitting new cases
             if new_cases:
@@ -551,11 +556,11 @@ class Session:
             case = self._template_case.clone(
                 clone_to=Path(self.pending_dir, name),
                 add=self._template_case_add_files,
-                method=self.clone_method
+                method=self.clone_method,
             )
 
             case.id = uid
-            case._generation_index = f"{job_number:05d}.{case_i+1:02d}"
+            case._generation_index = f"{job_number:05d}.{case_i + 1:02d}"
 
             # Apply all suggestions
             self._apply_suggestions_to_case(case, suggestion_dict)
@@ -749,9 +754,12 @@ class Session:
             # Determine which objective to check
             if self.target_objective:
                 objective = next(
-                    (obj for obj in self.backend.objectives
-                     if obj.name == self.target_objective),
-                    None
+                    (
+                        obj
+                        for obj in self.backend.objectives
+                        if obj.name == self.target_objective
+                    ),
+                    None,
                 )
                 if not objective:
                     logging.warning(
@@ -773,8 +781,7 @@ class Session:
 
                 if objective.name in obj_outputs:
                     value = raw_values.get(
-                        objective.name,
-                        obj_outputs[objective.name].get("value")
+                        objective.name, obj_outputs[objective.name].get("value")
                     )
                     if value is not None:
                         if objective.minimize:
@@ -797,7 +804,9 @@ class Session:
         for i, case in enumerate(cases, 1):
             print(f"[{i}] {str(case)}")
 
-    def print_top_designs(self, n: Optional[int] = 5, by_objective: Optional[str] = None):
+    def print_top_designs(
+        self, n: Optional[int] = 5, by_objective: Optional[str] = None
+    ):
         """
         Display the top N designs based on objective function values.
         If n is None, displays all designs in submission order.
@@ -809,7 +818,9 @@ class Session:
                 uses the first objective. Defaults to None.
         """
         # Get finished and successful cases
-        finished_cases = self.get_finished_cases(include_failed=False, batch_process=False)
+        finished_cases = self.get_finished_cases(
+            include_failed=False, batch_process=False
+        )
 
         if not finished_cases:
             print("No completed cases available yet.")
@@ -821,7 +832,10 @@ class Session:
 
         # Determine which objective to use for ranking
         if by_objective:
-            objective = next((obj for obj in self.backend.objectives if obj.name == by_objective), None)
+            objective = next(
+                (obj for obj in self.backend.objectives if obj.name == by_objective),
+                None,
+            )
             if not objective:
                 raise ValueError(f"Objective '{by_objective}' not found")
         else:
@@ -860,10 +874,12 @@ class Session:
             # Sort by processed value for proper ranking (reverse if maximizing)
             reverse = not objective.minimize  # Higher is better if maximizing
             case_scores.sort(key=lambda x: x[1], reverse=reverse)
-            display_cases = case_scores[:min(n, len(case_scores))]
+            display_cases = case_scores[: min(n, len(case_scores))]
             header = f"=== Top {len(display_cases)} Designs (by '{objective.name}') ==="
 
-        other_objectives = [obj for obj in self.backend.objectives if obj.name != objective.name]
+        other_objectives = [
+            obj for obj in self.backend.objectives if obj.name != objective.name
+        ]
 
         COL_RANK = 6
         COL_NAME = 35
@@ -872,11 +888,17 @@ class Session:
         n_obj_cols = 1 + len(other_objectives)
 
         print(f"\n{header}")
-        obj_header = f"{objective.name:<{COL_OBJ}}" + "".join(f"{obj.name:<{COL_OBJ}}" for obj in other_objectives)
-        print(f"{'Rank':<{COL_RANK}} {'Case Name':<{COL_NAME}} {obj_header} {'Parameters'}")
+        obj_header = f"{objective.name:<{COL_OBJ}}" + "".join(
+            f"{obj.name:<{COL_OBJ}}" for obj in other_objectives
+        )
+        print(
+            f"{'Rank':<{COL_RANK}} {'Case Name':<{COL_NAME}} {obj_header} {'Parameters'}"
+        )
         print("-" * (COL_RANK + COL_NAME + COL_OBJ * n_obj_cols + COL_PARAMS))
 
-        for rank, (case, proc_value, raw_value, gen_index) in enumerate(display_cases, 1):
+        for rank, (case, proc_value, raw_value, gen_index) in enumerate(
+            display_cases, 1
+        ):
             metadata = case.read_metadata()
 
             # Get parameter values
@@ -884,7 +906,9 @@ class Session:
             if metadata and "optimizer-suggestion" in metadata:
                 opt_sugg = metadata["optimizer-suggestion"]
                 params = [
-                    f"{k}={v.get('value', 'N/A'):.3f}" if isinstance(v.get('value'), (int, float)) else f"{k}={v.get('value', 'N/A')}"
+                    f"{k}={v.get('value', 'N/A'):.3f}"
+                    if isinstance(v.get("value"), (int, float))
+                    else f"{k}={v.get('value', 'N/A')}"
                     for k, v in opt_sugg.items()
                 ]
             params_str = ", ".join(params) if params else "N/A"
@@ -918,7 +942,9 @@ class Session:
         Args:
             fname (str): Output filename. Defaults to 'designs.json'.
         """
-        finished_cases = self.get_finished_cases(include_failed=False, batch_process=False)
+        finished_cases = self.get_finished_cases(
+            include_failed=False, batch_process=False
+        )
 
         if not finished_cases:
             return
@@ -946,13 +972,15 @@ class Session:
                         "minimize": obj_data.get("minimize"),
                     }
 
-            designs.append({
-                "name": case.name,
-                "generation_index": metadata.get("generation_index"),
-                "created_at": str(metadata.get("created_at", "")),
-                "parameters": params,
-                "objectives": objectives,
-            })
+            designs.append(
+                {
+                    "name": case.name,
+                    "generation_index": metadata.get("generation_index"),
+                    "created_at": str(metadata.get("created_at", "")),
+                    "parameters": params,
+                    "objectives": objectives,
+                }
+            )
 
         # Sort chronologically by generation_index
         designs.sort(key=lambda d: d["generation_index"] or "99999.99")
@@ -969,4 +997,3 @@ class Session:
             json.dump(output, f, indent=2)
 
         logging.info(f"Designs log written to {out_path} ({len(designs)} designs)")
-
