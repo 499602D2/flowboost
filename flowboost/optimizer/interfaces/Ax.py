@@ -50,7 +50,9 @@ class AxBackend(Backend):
         self._verify_configuration()
 
         # Compute remaining initialization trials, accounting for already-completed ones
-        base_init = self.initialization_trials if self.initialization_trials is not None else 5
+        base_init = (
+            self.initialization_trials if self.initialization_trials is not None else 5
+        )
         remaining_init = max(0, base_init - num_already_completed)
 
         logging.info(
@@ -210,6 +212,7 @@ class AxBackend(Backend):
             raise ValueError("Re-initialize should not be called when stateless=False")
         self.client = AxClient()
         num_completed = len(self._trial_index_case_mapping)
+        self._trial_index_case_mapping = {}
         self.initialize(num_already_completed=num_completed)
 
     def set_objectives(self, objectives: list[Union[Objective, AggregateObjective]]):
@@ -422,32 +425,12 @@ class AxBackend(Backend):
                 logging.info(f"Case already attached in _ensure_attached, {case}")
                 continue
 
-            # Generate parametrizations: these describe the search space for Ax
+            # Generate parametrizations: these describe the search space for Ax.
+            # Type coercion is handled by Case.parametrize_configuration().
             p = case.parametrize_configuration(self.dimensions)
 
-            # TODO: report this to Ax issue tracker
-            # Convert types to match Ax search space expectations
-            p_typed = {}
-            for dim in self.dimensions:
-                value = p[dim.name]
-
-                # Convert to the proper type based on dimension's value_type
-                if dim.value_type == "int":
-                    p_typed[dim.name] = int(float(value))
-                elif dim.value_type == "float":
-                    p_typed[dim.name] = float(value)
-                elif dim.value_type == "bool":
-                    p_typed[dim.name] = bool(value)
-                else:
-                    p_typed[dim.name] = str(value)
-
-                logging.debug(
-                    f"Converted {dim.name}: {value} ({type(value).__name__}) "
-                    f"-> {p_typed[dim.name]} ({type(p_typed[dim.name]).__name__})"
-                )
-
-            logging.info(f"Attaching c={case.name}, p={p_typed}")
-            _, idx = self.client.attach_trial(parameters=p_typed, arm_name=case.name)
+            logging.info(f"Attaching c={case.name}, p={p}")
+            _, idx = self.client.attach_trial(parameters=p, arm_name=case.name)
 
             # TODO if we were to run in stateful mode, we'd stash the index
             self._trial_index_case_mapping[case] = idx

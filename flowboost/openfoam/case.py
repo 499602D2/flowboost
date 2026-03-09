@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from flowboost.optimizer.objectives import AggregateObjective, Objective
 
 DEFAULT_METADATA: str = "metadata.toml"
+GENERATION_INDEX_SORT_SENTINEL: str = "99999.99"
 
 
 class Status(Enum):
@@ -358,58 +359,67 @@ class Case:
 
         return read_from.reader(self.path)
 
-        raise ValueError("No DictionaryLink or path provided, cannot produce a reader")
-
     def parametrize_configuration(self, dimensions: list[Dimension]) -> dict[str, Any]:
         """
-        Parametrize a case configuration for the given list of dimensions. More
-        specifically, the function produces a dictionary mapping the name of
-        each dimension to the value of the linked entry in the case's config
-        dictionary.
+        Produce a dictionary mapping each dimension's name to its current
+        value in this case, coerced to the dimension's declared Python type.
+
+        Values are read from saved optimizer-suggestion metadata when
+        available, falling back to the linked OpenFOAM dictionary entry.
 
         Args:
-            dimensions (list[Dimension]): List of dimensions to produce \
-                parametrization for
+            dimensions (list[Dimension]): Dimensions to parametrize.
 
         Raises:
-            ValueError: On failure of dictionary reading
+            ValueError: On failure of dictionary reading or type coercion.
 
         Returns:
-            dict[str, Any]: Parametrized configuration keyed by dimension names
+            dict[str, Any]: Parametrized configuration keyed by dimension names.
         """
-        par_dict = {}
-
-        # Try to read from metadata first (for completed cases)
         metadata = self.read_metadata()
-        optimizer_suggestions = (
-            metadata.get("optimizer-suggestion", {}) if metadata else {}
-        )
+        suggestions = metadata.get("optimizer-suggestion", {}) if metadata else {}
 
+        par_dict = {}
         for dim in dimensions:
-            # First try to get from saved optimizer-suggestion metadata
-            if dim.name in optimizer_suggestions:
-                value = optimizer_suggestions[dim.name].get("value")
-                if value is not None:
-                    par_dict[dim.name] = value
-                    logging.debug(f"Read dim='{dim.name}' from metadata: {value}")
-                    continue
+            # Read raw value: prefer saved metadata, fall back to dictionary
+            raw = self._read_dimension_value(dim, suggestions)
 
-            # Otherwise, read from dictionary
-            if dim.linked_entry is None:
+            # Coerce to the dimension's declared type
+            try:
+                par_dict[dim.name] = dim.coerce_value(raw)
+            except (ValueError, TypeError) as exc:
                 raise ValueError(
-                    f"Cannot parametrize case: '{dim.name}' has no linked dict entry"
-                )
-
-            reader = dim.linked_entry.reader(self.path)
-
-            if not reader or isinstance(reader, DictionaryReader):
-                raise ValueError(
-                    f"Cannot parametrize case: no value for {reader} [{self}]"
-                )
-
-            par_dict[dim.name] = reader.value
+                    f"Cannot coerce dim='{dim.name}' value {raw!r} "
+                    f"to {dim.value_type} [{self}]"
+                ) from exc
 
         return par_dict
+
+    def _read_dimension_value(self, dim: Dimension, suggestions: dict) -> Any:
+        """Return the raw value for *dim* from metadata or the linked dictionary."""
+        # Try saved optimizer-suggestion metadata first (for completed cases)
+        suggestion = suggestions.get(dim.name, {})
+        if isinstance(suggestion, dict):
+            value = suggestion.get("value")
+            if value is not None:
+                logging.debug(f"Read dim='{dim.name}' from metadata: {value}")
+                return value
+
+        # Fall back to the linked dictionary entry
+        if dim.linked_entry is None:
+            raise ValueError(
+                f"Cannot parametrize case: '{dim.name}' has no linked dict entry"
+            )
+
+        entry = dim.linked_entry.reader(self.path)
+
+        if not isinstance(entry, Entry):
+            raise ValueError(
+                f"Cannot parametrize case: expected Entry for "
+                f"'{dim.name}', got {type(entry).__name__} [{self}]"
+            )
+
+        return entry.value
 
     def objective_function_outputs(
         self, objectives: list[Union["Objective", "AggregateObjective"]]
