@@ -36,7 +36,7 @@ class Dimension:
             relative path is available.
         """
         self.linked_entry = dictionary_link
-        logging.info(f"Linked dim='{self.name}' to {DictionaryLink}")
+        logging.info(f"Linked dim='{self.name}' to {dictionary_link}")
 
     @classmethod
     def range(
@@ -131,17 +131,68 @@ class Dimension:
             logging.error(f"Cannot convert {value} to {target_type}.")
             raise
 
+    # Canonical mapping between Python types and their string representations.
+    # Used by _get_value_type_str (type→str) and coerce (str→type).
+    _TYPE_MAP: dict[type, str] = {int: "int", float: "float", bool: "bool", str: "str"}
+    _TYPE_MAP_INV: dict[str, type] = {v: k for k, v in _TYPE_MAP.items()}
+
     @staticmethod
     def _get_value_type_str(value_type: Type) -> str:
         """
         Converts a type (e.g., int, float, bool, str) to its string representation.
         """
-        type_map = {int: "int", float: "float", bool: "bool", str: "str"}
+        if value_type in Dimension._TYPE_MAP:
+            return Dimension._TYPE_MAP[value_type]
 
-        # Check if the value_type is in the type_map and return its string repr
-        if value_type in type_map:
-            return type_map[value_type]
-        else:
-            raise ValueError(
-                f"Unsupported type {value_type}, must be (int, float, bool, str)"
-            )
+        raise ValueError(
+            f"Unsupported type {value_type}, must be (int, float, bool, str)"
+        )
+
+    def coerce_value(self, value: Any) -> Any:
+        """Coerce *value* to this dimension's declared ``value_type``.
+
+        Returns *value* unchanged when ``value_type`` is ``None``.
+        """
+        if self.value_type is None:
+            return value
+        return Dimension._coerce(value, self.value_type)
+
+    @staticmethod
+    def _coerce(value: Any, value_type: str) -> Any:
+        """Coerce *value* to the Python type indicated by *value_type*.
+
+        Handles the quirks that arise when values are read back from
+        OpenFOAM dictionaries or TOML metadata (strings, numpy scalars,
+        ``bool`` being a subclass of ``int``, etc.).
+
+        Args:
+            value: The raw value to coerce.
+            value_type: One of ``"int"``, ``"float"``, ``"bool"``, ``"str"``.
+
+        Returns:
+            The value converted to the corresponding Python native type.
+
+        Raises:
+            ValueError: If *value_type* is unknown or conversion fails.
+        """
+        target = Dimension._TYPE_MAP_INV.get(value_type)
+        if target is None:
+            raise ValueError(f"Unknown value_type: {value_type!r}")
+
+        # Exact type match — skip conversion.
+        # NOTE: ``isinstance`` is intentionally avoided because
+        # ``isinstance(True, int)`` is True in Python.
+        if type(value) is target:
+            return value
+
+        if target is int:
+            # int(float(v)) handles string integers ("3") and float→int
+            coerced = int(float(value))
+            if float(value) != coerced:
+                logging.warning(f"Lossy int coercion: {value!r} truncated to {coerced}")
+            return coerced
+
+        if target is bool:
+            return Dimension._ensure_types_match(value, bool)
+
+        return target(value)
