@@ -203,7 +203,7 @@ class AxBackend(Backend):
 
         with open(from_file, "r") as json_f:
             json_d = json.load(json_f)
-            ax.client.from_json_snapshot(json_d)
+            ax.client = AxClient.from_json_snapshot(json_d)
 
         logging.info("Restored Ax state from json snapshot")
         return ax

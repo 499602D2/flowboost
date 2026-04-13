@@ -135,3 +135,27 @@ def test_prepare_for_acquisition_offload_serializes_normalized_outputs(
 
     assert type(objective_value) is float
     assert objective_value == 0.0
+
+
+def test_offloaded_acquisition_round_trip(data_dir, tmp_path):
+    case = _make_copied_case(data_dir, tmp_path, "roundtrip-case")
+    backend, _ = _make_normalized_backend(case)
+    backend.offload_acquisition = True
+    backend.initialize()
+
+    model_snapshot, data_snapshot = backend.prepare_for_acquisition_offload(
+        [case], [], tmp_path
+    )
+    output_path = tmp_path / "acquisition_result.json"
+
+    AxBackend.offloaded_acquisition(
+        model_snapshot=model_snapshot,
+        data_snapshot=data_snapshot,
+        num_trials=1,
+        output_path=output_path,
+    )
+
+    result = json.loads(output_path.read_text())
+    assert result["optimizer"] == "AxBackend"
+    assert result["status_finished"] is False
+    assert len(result["parametrizations"]) == 1
