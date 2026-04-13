@@ -6,6 +6,7 @@ import numpy as np
 from sklearn.preprocessing import MinMaxScaler, PowerTransformer
 
 from flowboost.openfoam.case import Case
+from flowboost.optimizer.scalars import coerce_objective_scalar
 
 
 class Objective:
@@ -91,10 +92,11 @@ class Objective:
         # post-processing function during evaluation.
         self._post_processing_steps: list[tuple[Callable, Any]] = []
 
-        # Data storage for each case that gets evaluated by this objective
-        # _objective_output_data is raw, pre-post-processed data.
+        # Data storage for each case that gets evaluated by this objective.
+        # Raw outputs may be arbitrary, but post-processed outputs must be
+        # scalar numerics suitable for optimization backends.
         self._objective_output_data: dict[Case, Any] = {}
-        self._post_processed_data: dict[Case, Any] = {}
+        self._post_processed_data: dict[Case, float] = {}
 
         if normalization_step:
             self.add_normalization_step(method=normalization_step)
@@ -150,7 +152,7 @@ class Objective:
 
     def execute_post_processing_steps(
         self, cases: list[Case], outputs: list[Any], save_output: bool = True
-    ) -> dict[Case, Any]:
+    ) -> dict[Case, float]:
         if len(outputs) != len(cases):
             raise ValueError(
                 f"Case count != output count: cases={cases}, outputs={outputs}"
@@ -170,9 +172,12 @@ class Objective:
 
         # Optionally, save post-processed outputs back to a dictionary keyed by Case
         # if specific per-case post-processed data is needed for further analysis
-        out_dict: dict[Case, Any] = {}
+        out_dict: dict[Case, float] = {}
         for case, processed_output in zip(cases, outputs):
-            out_dict[case] = processed_output
+            out_dict[case] = coerce_objective_scalar(
+                processed_output,
+                label=f"Post-processed objective '{self.name}' output",
+            )
 
         if save_output:
             self._post_processed_data = out_dict
@@ -288,10 +293,11 @@ class AggregateObjective:
 
         self._post_processing_steps: list[tuple[Callable, dict[str, Any]]] = []
 
-        # Data storage for each case that gets evaluated by this objective
-        # _objective_output_data is raw, pre-post-processed data.
+        # Data storage for each case that gets evaluated by this objective.
+        # Raw outputs may be tuples across objectives, but the final aggregated
+        # values stored for backends are scalar numerics.
         self._objective_output_data: dict[Case, Any] = {}
-        self._post_processed_data: dict[Case, Any] = {}
+        self._post_processed_data: dict[Case, float] = {}
 
         if len(self.weights) != len(self.objectives):
             raise ValueError("Length of weights must match number of objectives")
@@ -420,4 +426,5 @@ class ScikitNormalizationStep:
         self.normalizer = scikit_normalizer
 
     def evaluate(self, input: list) -> list:
-        return list(self.normalizer.fit_transform(np.array(input).reshape(-1, 1)))
+        normalized = self.normalizer.fit_transform(np.array(input).reshape(-1, 1))
+        return normalized.reshape(-1).tolist()

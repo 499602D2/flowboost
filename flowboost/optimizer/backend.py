@@ -7,6 +7,7 @@ from typing import Any, Union
 
 from flowboost.openfoam.case import Case
 from flowboost.optimizer.objectives import AggregateObjective, Objective
+from flowboost.optimizer.scalars import coerce_objective_scalar
 from flowboost.optimizer.search_space import Dimension
 
 DEFAULT_OFFLOAD_RESULT_FNAME = "acquisition_result.json"
@@ -243,25 +244,20 @@ class Backend(ABC):
             raw_objective_results = {}
             for obj_idx, objective in enumerate(self.objectives):
                 # Post-processed value
-                value = final_outputs[obj_idx][case_idx]
-                if hasattr(value, 'item'):
-                    value = value.item()
-                elif hasattr(value, 'tolist'):
-                    value = value.tolist()
-
+                value = coerce_objective_scalar(
+                    final_outputs[obj_idx][case_idx],
+                    label=f"Post-processed objective '{objective.name}' output",
+                )
                 objective_results[objective.name] = {
-                    "value": float(value),
+                    "value": value,
                     "minimize": objective.minimize,
                 }
 
                 # Raw value (before post-processing)
-                raw_value = raw_outputs[obj_idx][case_idx]
-                if hasattr(raw_value, 'item'):
-                    raw_value = raw_value.item()
-                elif hasattr(raw_value, 'tolist'):
-                    raw_value = raw_value.tolist()
-
-                raw_objective_results[objective.name] = float(raw_value)
+                raw_objective_results[objective.name] = coerce_objective_scalar(
+                    raw_outputs[obj_idx][case_idx],
+                    label=f"Raw objective '{objective.name}' output",
+                )
 
             # Save post-processed values
             case.update_metadata(objective_results, entry_header="objective-outputs")

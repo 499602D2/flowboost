@@ -11,6 +11,7 @@ from ax.service.ax_client import AxClient, ObjectiveProperties, TParameterizatio
 from flowboost.openfoam.case import Case
 from flowboost.optimizer.backend import Backend
 from flowboost.optimizer.objectives import AggregateObjective, Objective
+from flowboost.optimizer.scalars import coerce_objective_scalar
 from flowboost.optimizer.search_space import Dimension
 
 
@@ -139,7 +140,13 @@ class AxBackend(Backend):
 
             # TODO support user's noise preference!
             raw_data = {
-                obj_name: (outcome, 0.0)
+                obj_name: (
+                    coerce_objective_scalar(
+                        outcome,
+                        label=f"Offloaded objective '{obj_name}' output",
+                    ),
+                    0.0,
+                )
                 for obj_name, outcome in data_dict["objectives"].items()
             }
 
@@ -464,7 +471,13 @@ class AxBackend(Backend):
 
             # Construct tuple-based result for case: see Ax TEvaluationOutcome
             raw_data = {
-                obj_name: (outcome, self._SEM_by_objective.get(obj_name, 0.0))
+                obj_name: (
+                    coerce_objective_scalar(
+                        outcome,
+                        label=f"Objective '{obj_name}' output for Ax",
+                    ),
+                    self._SEM_by_objective.get(obj_name, 0.0),
+                )
                 for obj_name, outcome in objective_f_outputs[case].items()
             }
 
