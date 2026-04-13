@@ -40,14 +40,33 @@ df = case.data.simple_function_object_reader("forceCoeffsCompressible")
 ```
 
 ## Installation
+
 FlowBoost requires Python 3.10 or later.
 
+It is **highly** recommended that you use a virtual environment ("venv") when using FlowBoost. For this, [uv](https://github.com/astral-sh/uv) is the recommended choice, but virtualenv, Poetry, and others will work just fine, too.
+
+To set up a virtual environment using uv:
+
+```shell
+mkdir my-research-dir
+cd my-research-dir
+
+uv sync --python=3.13 # or your desired Python version (>=3.10)
+uv add flowboost # add FlowBoost to the uv-managed venv as a dependency
+```
+
+Next, either source the environment manually using `source .venv/bin/activate`, or run your script using `uv run my_experiment.py`.
+
 ### uv (recommended)
+
+To add FlowBoost to an existing Python environment:
+
 ```shell
 uv add flowboost
 ```
 
 ### pip
+
 ```shell
 pip install flowboost
 ```
