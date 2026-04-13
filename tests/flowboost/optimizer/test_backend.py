@@ -72,8 +72,10 @@ def test_tell(Ax_backend, test_case, foam_in_env):
     Ax_backend.tell([test_case])
 
 
-def _make_copied_case(data_dir, tmp_path, name: str) -> Case:
-    case = Case.copy(data_dir, tmp_path / name)
+def _make_case(tmp_path, name: str) -> Case:
+    case_dir = tmp_path / name
+    case_dir.mkdir()
+    case = Case(case_dir)
     case.update_metadata(
         {"test_dim": {"value": 0.5}},
         entry_header="optimizer-suggestion",
@@ -108,8 +110,8 @@ def _make_normalized_backend(case: Case) -> tuple[AxBackend, Objective]:
     return backend, objective
 
 
-def test_tell_accepts_normalized_scalar_like_outputs(data_dir, tmp_path):
-    case = _make_copied_case(data_dir, tmp_path, "normalized-case")
+def test_tell_accepts_normalized_scalar_like_outputs(tmp_path):
+    case = _make_case(tmp_path, "normalized-case")
     backend, _ = _make_normalized_backend(case)
 
     backend.tell([case])
@@ -120,9 +122,9 @@ def test_tell_accepts_normalized_scalar_like_outputs(data_dir, tmp_path):
 
 
 def test_prepare_for_acquisition_offload_serializes_normalized_outputs(
-    data_dir, tmp_path
+    tmp_path
 ):
-    case = _make_copied_case(data_dir, tmp_path, "offload-case")
+    case = _make_case(tmp_path, "offload-case")
     backend, _ = _make_normalized_backend(case)
     backend.offload_acquisition = True
     backend.initialize()
@@ -137,8 +139,8 @@ def test_prepare_for_acquisition_offload_serializes_normalized_outputs(
     assert objective_value == 0.0
 
 
-def test_offloaded_acquisition_round_trip(data_dir, tmp_path):
-    case = _make_copied_case(data_dir, tmp_path, "roundtrip-case")
+def test_offloaded_acquisition_round_trip(tmp_path):
+    case = _make_case(tmp_path, "roundtrip-case")
     backend, _ = _make_normalized_backend(case)
     backend.offload_acquisition = True
     backend.initialize()
