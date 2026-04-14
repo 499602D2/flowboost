@@ -34,6 +34,38 @@ def test_restore(test_session: Session):
     print("Restored session")
 
 
+def test_session_random_seed_is_applied_to_backend(tmp_path):
+    session = Session(
+        name="Seeded session",
+        data_dir=tmp_path / "seeded_session",
+        random_seed=123,
+    )
+
+    assert session.random_seed == 123
+    assert hasattr(session.backend, "random_seed")
+    assert session.backend.random_seed == 123
+
+
+def test_session_restore_reapplies_random_seed_to_backend(tmp_path):
+    data_dir = tmp_path / "restored_seed_session"
+    created = Session(
+        name="Restored seed session",
+        data_dir=data_dir,
+        random_seed=321,
+    )
+    created.persist()
+
+    restored = Session(
+        name="ignored",
+        data_dir=data_dir,
+        random_seed=None,
+    )
+
+    assert restored.random_seed == 321
+    assert hasattr(restored.backend, "random_seed")
+    assert restored.backend.random_seed == 321
+
+
 def test_incorrect_startup():
     # Objective missing linked entry
     # Test missing dictionary

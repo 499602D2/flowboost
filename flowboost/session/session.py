@@ -30,6 +30,7 @@ class Session:
         dataframe_format: str = "polars",
         backend: str = "AxBackend",
         clone_method: Literal["foamCloneCase", "copy"] = "foamCloneCase",
+        random_seed: Optional[int] = None,
         max_evaluations: Optional[int] = None,
         target_value: Optional[float] = None,
         target_objective: Optional[str] = None,
@@ -48,6 +49,8 @@ class Session:
                 basis. Defaults to polars.
             backend (str, optional): Optimization backend to use. Defaults to "Ax".
             clone_method (Literal["foamCloneCase", "copy"], optional): Method to use for cloning cases. Defaults to "foamCloneCase".
+            random_seed (Optional[int], optional): Optional optimizer seed for \
+                reproducible candidate generation. Defaults to None.
             max_evaluations (Optional[int], optional): Maximum number of evaluations \
                 before stopping optimization. Defaults to None (no limit).
             target_value (Optional[float], optional): Target objective value to reach. \
@@ -62,6 +65,7 @@ class Session:
         self.created_at: datetime = datetime.now(tz=timezone.utc)
         self.dataframe_format: str = dataframe_format
         self.clone_method: Literal["foamCloneCase", "copy"] = clone_method
+        self.random_seed: Optional[int] = random_seed
 
         # Termination criteria
         self.max_evaluations: Optional[int] = max_evaluations
@@ -78,6 +82,7 @@ class Session:
 
         # Optimizer
         self.backend: Backend = Backend.create(backend)
+        self._apply_backend_preferences()
         self.job_manager: Optional[Manager] = None
 
         # Template simulation that optimization points are derived from
@@ -435,6 +440,13 @@ class Session:
         """
         Return the session state as a dictionary.
         """
+        optimizer_state = {
+            "type": self.backend.type,
+            "offload_acquisition": self.backend.offload_acquisition,
+        }
+        if self.random_seed is not None:
+            optimizer_state["random_seed"] = self.random_seed
+
         state = {
             "session": {
                 "name": self.name,
@@ -448,10 +460,7 @@ class Session:
                 "path": str(self._template_case.path) if self._template_case else "",
                 "additional_files": self._template_case_add_files,
             },
-            "optimizer": {
-                "type": self.backend.type,
-                "offload_acquisition": self.backend.offload_acquisition,
-            },
+            "optimizer": optimizer_state,
             "scheduler": {
                 "type": self.job_manager.type if self.job_manager else "",
                 "job_limit": self.job_manager.job_limit if self.job_manager else 1,
@@ -490,7 +499,9 @@ class Session:
 
         # [optimizer]
         backend_type = str(data.get("optimizer", {}).get("type", "Ax"))
-        self.backend.create(backend_type)
+        self.random_seed = data.get("optimizer", {}).get("random_seed")
+        self.backend = Backend.create(backend_type)
+        self._apply_backend_preferences()
         offload = data.get("optimizer", {}).get("offload_acquisition", False)
         if offload:
             self.backend.offload_acquisition = offload
@@ -506,6 +517,11 @@ class Session:
 
         logging.info(f"Session restored from {from_file}")
         # No automatic pending case cleanup here.
+
+    def _apply_backend_preferences(self):
+        """Apply session-level optimizer settings to the active backend when supported."""
+        if hasattr(self.backend, "random_seed"):
+            self.backend.random_seed = self.random_seed
 
     def clean_pending_cases(self):
         """
