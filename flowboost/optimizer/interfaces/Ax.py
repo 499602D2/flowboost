@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from ax.core.arm import Arm
 from ax.core.base_trial import BaseTrial
 from ax.service.ax_client import AxClient, ObjectiveProperties, TParameterization
 
@@ -34,6 +35,8 @@ class AxBackend(Backend):
         self.SAASBO: bool = False
         self.max_parallelism: Optional[int] = None
         self.initialization_trials: Optional[int] = None
+        self.random_seed: Optional[int] = None
+        self.should_deduplicate: bool = True
 
         # Ax-specific constraints
         self._parameter_constraints: list[str] = []
@@ -72,6 +75,8 @@ class AxBackend(Backend):
                 "use_saasbo": self.SAASBO,
                 "disable_progbar": False,
                 "max_parallelism_override": self.max_parallelism,
+                "random_seed": self.random_seed,
+                "should_deduplicate": self.should_deduplicate,
             },
         )
 
@@ -134,8 +139,9 @@ class AxBackend(Backend):
         # Attach finished trials to backend
         logging.info("Attaching finished trials")
         for case_name, data_dict in data["finished_cases"].items():
-            _, idx = ax.client.attach_trial(
-                parameters=data_dict["parametrization"], arm_name=case_name
+            idx = ax._attach_trial_with_case_name(
+                parameters=data_dict["parametrization"],
+                case_name=case_name,
             )
 
             # TODO support user's noise preference!
@@ -155,8 +161,9 @@ class AxBackend(Backend):
         # Attach pending trials to backend
         logging.info("Attaching pending trials")
         for case_name, data_dict in data["pending_cases"].items():
-            _, idx = ax.client.attach_trial(
-                parameters=data_dict["parametrization"], arm_name=case_name
+            idx = ax._attach_trial_with_case_name(
+                parameters=data_dict["parametrization"],
+                case_name=case_name,
             )
 
         # Run acquisition
@@ -437,10 +444,42 @@ class AxBackend(Backend):
             p = case.parametrize_configuration(self.dimensions)
 
             logging.info(f"Attaching c={case.name}, p={p}")
-            _, idx = self.client.attach_trial(parameters=p, arm_name=case.name)
+            idx = self._attach_trial_with_case_name(parameters=p, case_name=case.name)
 
             # TODO if we were to run in stateful mode, we'd stash the index
             self._trial_index_case_mapping[case] = idx
+
+    def _attach_trial_with_case_name(
+        self, parameters: TParameterization, case_name: str
+    ) -> int:
+        """Attach a trial while preserving Ax's existing arm identity for duplicates."""
+        arm_name = self._arm_name_for_attachment(
+            parameters=parameters,
+            case_name=case_name,
+        )
+        _, trial_index = self.client.attach_trial(
+            parameters=parameters,
+            arm_name=arm_name,
+        )
+        return trial_index
+
+    def _arm_name_for_attachment(
+        self, parameters: TParameterization, case_name: str
+    ) -> str:
+        """Return the correct arm name for this parameterization in the experiment."""
+        existing_arm = self.client.experiment.arms_by_signature.get(
+            Arm.md5hash(parameters)
+        )
+        if existing_arm is None:
+            return case_name
+
+        if existing_arm.name != case_name:
+            logging.info(
+                "Reusing existing arm '%s' for duplicate parameters from case '%s'",
+                existing_arm.name,
+                case_name,
+            )
+        return existing_arm.name
 
     def _can_abandon_trial(self, trial: BaseTrial) -> bool:
         if trial is None:

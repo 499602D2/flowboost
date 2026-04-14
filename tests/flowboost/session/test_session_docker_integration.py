@@ -133,6 +133,22 @@ def _build_pitzdaily_session(tmp_path: Path, max_evaluations: int) -> Session:
     return session
 
 
+def _submit_and_archive_case(session: Session, case: Case) -> Case:
+    manager = session.job_manager
+    assert manager is not None
+
+    assert manager.submit_case(case)
+
+    finished_job = _wait_for_finished_job(manager)[0]
+    archived_path = session.archival_dir / finished_job.wdir.name
+
+    assert manager.move_data_for_job(finished_job, archived_path)
+
+    archived_case = Case(archived_path)
+    archived_case.post_evaluation_update(finished_job.to_dict())
+    return archived_case
+
+
 def test_pitzdaily_dockerlocal_example_smoke(docker_foam_runtime, tmp_path):
     manager = Manager.create(scheduler="dockerlocal", wdir=tmp_path, job_limit=1)
     case = _configure_pitzdaily_case(tmp_path / "pitzDaily_case")
@@ -190,3 +206,56 @@ def test_session_loop_optimizer_cycle_with_dockerlocal(docker_foam_runtime, tmp_
         assert type(outputs["inlet_pressure"]) is float
 
     assert session._check_termination_criteria()
+
+
+def test_session_tell_allows_duplicate_parameterizations_with_dockerlocal(
+    docker_foam_runtime, tmp_path
+):
+    session = _build_pitzdaily_session(tmp_path, max_evaluations=3)
+    session.backend.initialize()
+
+    inlet_k = session.backend.dimensions[0]
+    duplicate_suggestion = {inlet_k: 0.5}
+
+    first_case = session._process_optimizer_suggestion([duplicate_suggestion])[0]
+    second_case = session._process_optimizer_suggestion([duplicate_suggestion])[0]
+
+    archived_first = _submit_and_archive_case(session, first_case)
+    archived_second = _submit_and_archive_case(session, second_case)
+
+    assert archived_first.name != archived_second.name
+    assert archived_first.parametrize_configuration(session.backend.dimensions) == {
+        "inlet_k": 0.5
+    }
+    assert archived_second.parametrize_configuration(session.backend.dimensions) == {
+        "inlet_k": 0.5
+    }
+
+    finished_cases = sorted(
+        session.get_finished_cases(include_failed=False, batch_process=True),
+        key=lambda case: case.name,
+    )
+    assert len(finished_cases) == 2
+
+    session.backend.tell(finished_cases)
+
+    attached_trials = {
+        case.name: session.backend.client.experiment.trials[
+            session.backend._trial_index_case_mapping[case]
+        ]
+        for case in finished_cases
+    }
+
+    assert set(attached_trials) == {archived_first.name, archived_second.name}
+    assert len({trial.index for trial in attached_trials.values()}) == 2
+    assert all(trial.status.is_completed for trial in attached_trials.values())
+    assert all(trial.arm is not None for trial in attached_trials.values())
+    assert {trial.arm.parameters["inlet_k"] for trial in attached_trials.values()} == {
+        0.5
+    }
+    assert {trial.arm.name for trial in attached_trials.values()} == {
+        finished_cases[0].name
+    }
+    assert list(session.backend.client.experiment.arms_by_name) == [
+        finished_cases[0].name
+    ]
