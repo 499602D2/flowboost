@@ -59,3 +59,22 @@ def test_data_retrieval_post_processing(test_case):
     post_out = objective.data_for_case(test_case, post_processed=True)
 
     assert post_out == 1955 + 1, f"Post-proc out = {post_out} != 1955+1"
+
+
+def test_normalization_outputs_python_floats(test_case):
+    objective = Objective(
+        name="normalized_objective",
+        minimize=True,
+        objective_function=lambda _: 1.0,
+        normalization_step="min-max",
+    )
+
+    outputs = objective.batch_evaluate([test_case])
+    post_processed = objective.batch_post_process([test_case], outputs)
+    stored = objective.data_for_case(test_case, post_processed=True)
+    case_outputs = test_case.objective_function_outputs([objective])
+
+    assert post_processed == [0.0]
+    assert type(post_processed[0]) is float
+    assert type(stored) is float
+    assert case_outputs == {"normalized_objective": 0.0}

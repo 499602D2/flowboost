@@ -17,6 +17,7 @@ from flowboost.openfoam.data import Data
 from flowboost.openfoam.dictionary import DictionaryLink, DictionaryReader, Entry
 from flowboost.openfoam.interface import FOAM, run_command
 from flowboost.openfoam.runtime import FOAMRuntime, get_runtime
+from flowboost.optimizer.scalars import coerce_objective_scalar
 from flowboost.optimizer.search_space import Dimension
 
 if TYPE_CHECKING:
@@ -423,23 +424,26 @@ class Case:
 
     def objective_function_outputs(
         self, objectives: list[Union["Objective", "AggregateObjective"]]
-    ) -> dict[str, Any]:
+    ) -> dict[str, float]:
         """Get the post-processed objective function outputs for this case.
 
         Args:
             objectives (list[&#39;Objective&#39;, &#39;AggregateObjective&#39;])
 
         Returns:
-            dict[str, Any]: Mapping of objective name to output value
+            dict[str, float]: Mapping of objective name to scalar output value
         """
-        output_mapping = {}
+        output_mapping: dict[str, float] = {}
 
         for obj in objectives:
             out = obj.data_for_case(self, post_processed=True)
             if out is None:
                 raise ValueError(f"Objective='{obj.name}' output None for case {self}")
 
-            output_mapping[obj.name] = out
+            output_mapping[obj.name] = coerce_objective_scalar(
+                out,
+                label=f"Post-processed objective '{obj.name}' output",
+            )
 
         return output_mapping
 
