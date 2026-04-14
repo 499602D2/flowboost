@@ -841,7 +841,7 @@ wheels = [
 
 [[package]]
 name = "flowboost"
-version = "0.2.5"
+version = "0.2.6"
 source = { editable = "." }
 dependencies = [
     { name = "ax-platform", version = "1.2.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
