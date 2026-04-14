@@ -72,15 +72,31 @@ def test_tell(Ax_backend, test_case, foam_in_env):
     Ax_backend.tell([test_case])
 
 
-def _make_case(tmp_path, name: str) -> Case:
+def _make_case(tmp_path, name: str, value: float = 0.5) -> Case:
+    return _make_case_with_params(tmp_path, name, {"test_dim": value})
+
+
+def _make_case_with_params(
+    tmp_path, name: str, params: dict[str, int | float | bool | str]
+) -> Case:
     case_dir = tmp_path / name
     case_dir.mkdir()
     case = Case(case_dir)
     case.update_metadata(
-        {"test_dim": {"value": 0.5}},
+        {key: {"value": value} for key, value in params.items()},
         entry_header="optimizer-suggestion",
     )
     return case
+
+
+def _evaluate_objective(case: Case, objective: Objective) -> None:
+    outputs = objective.batch_evaluate([case])
+    objective.batch_post_process([case], outputs)
+
+
+def _evaluate_objective_batch(cases: list[Case], objective: Objective) -> None:
+    outputs = objective.batch_evaluate(cases)
+    objective.batch_post_process(cases, outputs)
 
 
 def _make_normalized_backend(case: Case) -> tuple[AxBackend, Objective]:
@@ -90,8 +106,7 @@ def _make_normalized_backend(case: Case) -> tuple[AxBackend, Objective]:
         objective_function=lambda _: 1.0,
         normalization_step="min-max",
     )
-    outputs = objective.batch_evaluate([case])
-    objective.batch_post_process([case], outputs)
+    _evaluate_objective(case, objective)
 
     backend = AxBackend()
     backend.set_search_space(
@@ -110,6 +125,66 @@ def _make_normalized_backend(case: Case) -> tuple[AxBackend, Objective]:
     return backend, objective
 
 
+def _make_issue_style_backend(
+    *, random_seed: int | None = None, should_deduplicate: bool = True
+) -> tuple[AxBackend, Objective]:
+    backend = AxBackend()
+    backend.initialization_trials = 1
+    backend.random_seed = random_seed
+    backend.should_deduplicate = should_deduplicate
+    backend.set_search_space(
+        [
+            Dimension.range(
+                name="heatSource",
+                link=DictionaryLink("constant/energy").entry("heatSource"),
+                lower=500.0,
+                upper=2000.0,
+            ),
+            Dimension.choice(
+                name="position",
+                link=DictionaryLink("constant/setup").entry("position"),
+                choices=[1, 3, 5, 7],
+                dtype=int,
+                is_ordered=True,
+            ),
+        ]
+    )
+    objective = Objective(
+        name="score",
+        minimize=True,
+        objective_function=lambda case: float(
+            case.read_metadata()["optimizer-suggestion"]["heatSource"]["value"]
+        )
+        + float(case.read_metadata()["optimizer-suggestion"]["position"]["value"]),
+    )
+    backend.set_objectives([objective])
+    return backend, objective
+
+
+def _collect_issue_style_suggestions(
+    tmp_path, backend: AxBackend, objective: Objective, limit: int
+) -> tuple[list[dict[str, int | float]], int | None, dict[str, int | float] | None]:
+    backend.initialize()
+
+    finished_cases: list[Case] = []
+    seen: list[dict[str, int | float]] = []
+
+    for i in range(1, limit + 1):
+        suggestion = backend.ask(1)[0]
+        params = {dim.name: value for dim, value in suggestion.items()}
+
+        if params in seen:
+            return seen, i, params
+
+        case = _make_case_with_params(tmp_path, f"issue-case-{i:02d}", params)
+        finished_cases.append(case)
+        _evaluate_objective_batch(finished_cases, objective)
+        seen.append(params)
+        backend.tell(finished_cases)
+
+    return seen, None, None
+
+
 def test_tell_accepts_normalized_scalar_like_outputs(tmp_path):
     case = _make_case(tmp_path, "normalized-case")
     backend, _ = _make_normalized_backend(case)
@@ -119,6 +194,32 @@ def test_tell_accepts_normalized_scalar_like_outputs(tmp_path):
     trial_index = backend._trial_index_case_mapping[case]
     trial = backend.client.experiment.trials[trial_index]
     assert trial.status.is_completed
+
+
+def test_tell_reuses_existing_arm_for_duplicate_parameterizations(tmp_path):
+    first_case = _make_case(tmp_path, "duplicate-a", value=0.5)
+    second_case = _make_case(tmp_path, "duplicate-b", value=0.5)
+    backend, objective = _make_normalized_backend(first_case)
+    _evaluate_objective_batch([first_case, second_case], objective)
+
+    backend.tell([first_case, second_case])
+
+    first_trial = backend.client.experiment.trials[
+        backend._trial_index_case_mapping[first_case]
+    ]
+    second_trial = backend.client.experiment.trials[
+        backend._trial_index_case_mapping[second_case]
+    ]
+
+    assert first_trial.index != second_trial.index
+    assert first_trial.status.is_completed
+    assert second_trial.status.is_completed
+    assert first_trial.arm is not None
+    assert second_trial.arm is not None
+    assert first_trial.arm.parameters == {"test_dim": 0.5}
+    assert second_trial.arm.parameters == {"test_dim": 0.5}
+    assert first_trial.arm.name == second_trial.arm.name == first_case.name
+    assert list(backend.client.experiment.arms_by_name) == [first_case.name]
 
 
 def test_prepare_for_acquisition_offload_serializes_normalized_outputs(
@@ -161,3 +262,94 @@ def test_offloaded_acquisition_round_trip(tmp_path):
     assert result["optimizer"] == "AxBackend"
     assert result["status_finished"] is False
     assert len(result["parametrizations"]) == 1
+
+
+def test_offloaded_acquisition_accepts_duplicate_parameterizations(tmp_path):
+    first_case = _make_case(tmp_path, "roundtrip-duplicate-a", value=0.5)
+    second_case = _make_case(tmp_path, "roundtrip-duplicate-b", value=0.5)
+    backend, objective = _make_normalized_backend(first_case)
+    _evaluate_objective_batch([first_case, second_case], objective)
+    backend.offload_acquisition = True
+    backend.initialize()
+
+    model_snapshot, data_snapshot = backend.prepare_for_acquisition_offload(
+        [first_case, second_case], [], tmp_path
+    )
+    output_path = tmp_path / "duplicate_acquisition_result.json"
+
+    AxBackend.offloaded_acquisition(
+        model_snapshot=model_snapshot,
+        data_snapshot=data_snapshot,
+        num_trials=1,
+        output_path=output_path,
+    )
+
+    result = json.loads(output_path.read_text())
+    assert result["optimizer"] == "AxBackend"
+    assert result["status_finished"] is False
+    assert len(result["parametrizations"]) == 1
+
+
+def test_issue_style_search_space_encoding_matches_ax_schema():
+    backend, _ = _make_issue_style_backend()
+
+    assert backend._get_ax_search_space() == [
+        {
+            "name": "heatSource",
+            "type": "range",
+            "value_type": "float",
+            "bounds": [500.0, 2000.0],
+            "log_scale": False,
+            "digits": None,
+        },
+        {
+            "name": "position",
+            "type": "choice",
+            "value_type": "int",
+            "values": [1, 3, 5, 7],
+            "is_ordered": True,
+        },
+    ]
+
+
+def test_issue_style_generation_can_repeat_without_deduplication(tmp_path):
+    backend, objective = _make_issue_style_backend(
+        random_seed=0,
+        should_deduplicate=False,
+    )
+
+    suggestions, duplicate_at, duplicate = _collect_issue_style_suggestions(
+        tmp_path,
+        backend,
+        objective,
+        limit=10,
+    )
+
+    assert duplicate_at is not None
+    assert duplicate_at <= 10
+    assert duplicate is not None
+    assert duplicate in suggestions
+
+
+def test_issue_style_generation_avoids_repeats_with_deduplication(tmp_path):
+    backend, objective = _make_issue_style_backend(
+        random_seed=0,
+        should_deduplicate=True,
+    )
+
+    suggestions, duplicate_at, duplicate = _collect_issue_style_suggestions(
+        tmp_path,
+        backend,
+        objective,
+        limit=10,
+    )
+
+    assert len(suggestions) == 10
+    assert duplicate_at is None
+    assert duplicate is None
+
+
+def test_ax_backend_deduplicates_by_default():
+    backend = AxBackend()
+
+    assert backend.should_deduplicate is True
