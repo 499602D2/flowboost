@@ -1,7 +1,14 @@
 import logging
+import math
 from typing import Any, Literal, Optional, Type, Union
 
 from flowboost.openfoam.dictionary import DictionaryLink
+
+# Target significant-digit headroom when auto-picking `digits` for a float
+# range. Float64 carries ~15-17 significant digits, so 12 leaves room below
+# the last-bit noise that appears when BO converges on a box-constraint
+# boundary and would otherwise defeat Ax's hash-based arm deduplication.
+_DEFAULT_FLOAT_SIG_DIGITS = 12
 
 
 class Dimension:
@@ -49,11 +56,26 @@ class Dimension:
         dtype: Type = float,
         digits: Optional[int] = None,
     ) -> "Dimension":
+        """Create a range dimension.
+
+        When ``dtype is float`` and ``digits`` is not supplied, a
+        magnitude-aware default is picked so rounded values preserve ~12
+        significant digits while stripping the last-bit float noise that
+        appears when BO converges on a box-constraint boundary (see
+        ``_default_digits_for_bounds``). Pass ``digits`` explicitly to
+        override, or ``digits=-1`` to disable rounding entirely.
+        """
         dim = cls(name, "range")
         dim.linked_entry = link
         dim.bounds = [lower, upper]
         dim.log_scale = log_scale
         dim.value_type = Dimension._get_value_type_str(dtype)
+
+        if digits is None and dtype is float:
+            digits = _default_digits_for_bounds(lower, upper)
+        elif digits is not None and digits < 0:
+            digits = None
+
         dim.digits = digits
         return dim
 
@@ -151,11 +173,21 @@ class Dimension:
     def coerce_value(self, value: Any) -> Any:
         """Coerce *value* to this dimension's declared ``value_type``.
 
+        For float-typed dimensions with ``digits`` set, the result is also
+        rounded to that many decimal places. This mirrors what Ax's
+        ``RangeParameter`` does on generated values and, crucially, also
+        applies to values coming back from OpenFOAM dictionaries or being
+        re-attached via ``attach_trial`` — which Ax does *not* round. Without
+        this, BO-near-boundary float noise slips past ``Arm.md5hash`` dedup.
+
         Returns *value* unchanged when ``value_type`` is ``None``.
         """
         if self.value_type is None:
             return value
-        return Dimension._coerce(value, self.value_type)
+        coerced = Dimension._coerce(value, self.value_type)
+        if self.value_type == "float" and self.digits is not None:
+            coerced = round(coerced, self.digits)
+        return coerced
 
     @staticmethod
     def _coerce(value: Any, value_type: str) -> Any:
@@ -196,3 +228,21 @@ class Dimension:
             return Dimension._ensure_types_match(value, bool)
 
         return target(value)
+
+
+def _default_digits_for_bounds(
+    lower: Union[int, float], upper: Union[int, float]
+) -> int:
+    """Pick a decimal-place count that gives ``_DEFAULT_FLOAT_SIG_DIGITS``
+    significant digits across *lower* and *upper*.
+
+    Ax's ``digits`` is a count of decimal places, so a fixed default cuts
+    both ways — fine for ``[500, 2000]``, catastrophic for ``[1e-9, 1e-7]``.
+    This scales with the bounds' magnitude so small-valued dimensions keep
+    their precision.
+    """
+    max_magnitude = max(abs(float(lower)), abs(float(upper)))
+    if max_magnitude == 0:
+        return _DEFAULT_FLOAT_SIG_DIGITS
+    order = math.floor(math.log10(max_magnitude))
+    return max(0, _DEFAULT_FLOAT_SIG_DIGITS - (order + 1))

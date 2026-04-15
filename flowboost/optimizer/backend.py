@@ -19,6 +19,15 @@ class Backend(ABC):
         self.objectives: list[Union[Objective, AggregateObjective]] = []
         self.dimensions: list[Dimension] = []
         self.offload_acquisition: bool = False
+        self._initialized: bool = False
+
+    def _ensure_initialized(self, op: str) -> None:
+        if not self._initialized:
+            raise RuntimeError(
+                f"Backend.{op}() called before initialize(). Call "
+                f"backend.initialize() (or Session.start()) after setting "
+                f"objectives and the search space."
+            )
 
     @staticmethod
     def create(backend: str) -> "Backend":
@@ -73,6 +82,7 @@ class Backend(ABC):
         pass
 
     def ask(self, max_cases: int) -> list[dict[Dimension, Any]]:
+        self._ensure_initialized("ask")
         parametrizations = self._ask(max_cases)
         return self._post_process_suggestion_parametrizations(parametrizations)
 
@@ -313,3 +323,10 @@ class Backend(ABC):
 
         if not self._dim_names_are_unique():
             raise ValueError("All Dimension names must be unique")
+
+
+class OptimizationComplete(Exception):
+    """Raised by a backend when the optimizer has exhausted its budget and
+    no further trials can be produced. Callers (typically ``Session``) are
+    expected to catch this and shut down the loop cleanly.
+    """

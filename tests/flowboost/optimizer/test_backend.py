@@ -5,6 +5,7 @@ import pytest
 
 from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
+from flowboost.optimizer.backend import OptimizationComplete
 from flowboost.optimizer.interfaces.Ax import AxBackend
 from flowboost.optimizer.objectives import Objective
 from flowboost.optimizer.search_space import Dimension
@@ -54,6 +55,57 @@ def Ax_backend() -> AxBackend:
 
 def test_initialization(Ax_backend):
     Ax_backend.initialize()
+
+
+def test_ask_before_initialize_raises_clear_error(Ax_backend):
+    """Calling ask() on a fresh backend used to surface a deep Ax
+    AssertionError; it should now raise a FlowBoost-level guidance message."""
+    with pytest.raises(RuntimeError, match="called before initialize"):
+        Ax_backend.ask(max_cases=1)
+
+
+def test_ask_raises_optimization_complete_instead_of_sys_exit(Ax_backend, monkeypatch):
+    """The backend used to call sys.exit when Ax reported the optimization
+    finished, which would kill the host process. It should now raise a
+    dedicated exception the caller can catch."""
+    Ax_backend.initialize()
+
+    def fake_get_next_trials(*args, **kwargs):
+        return ({}, True)  # empty parametrizations, finished=True
+
+    monkeypatch.setattr(
+        Ax_backend.client, "get_next_trials", fake_get_next_trials
+    )
+
+    with pytest.raises(OptimizationComplete):
+        Ax_backend.ask(max_cases=1)
+
+
+def test_ask_returns_empty_when_backend_yields_no_trials(Ax_backend, monkeypatch):
+    """An empty generator response (e.g. parallelism cap reached mid-run) is
+    a legitimate state; ask() should return an empty list, not raise."""
+    Ax_backend.initialize()
+
+    def fake_get_next_trials(*args, **kwargs):
+        return ({}, False)  # empty, not finished
+
+    monkeypatch.setattr(
+        Ax_backend.client, "get_next_trials", fake_get_next_trials
+    )
+
+    assert Ax_backend.ask(max_cases=1) == []
+
+
+def test_tell_on_unevaluated_case_raises_clear_error(tmp_path):
+    """Calling tell() with a case that hasn't been batch-processed used to
+    blow up with 'output None for case ...' from deep inside Case; it should
+    now point the caller at batch_process / get_finished_cases(batch_process=True)."""
+    unevaluated = _make_case(tmp_path, "unevaluated", value=0.5)
+    backend, _ = _make_normalized_backend(unevaluated)
+    other = _make_case(tmp_path, "other", value=0.25)
+
+    with pytest.raises(ValueError, match="has not been evaluated"):
+        backend.tell([other])
 
 
 def test_tell(Ax_backend, test_case, foam_in_env):
@@ -222,6 +274,40 @@ def test_tell_reuses_existing_arm_for_duplicate_parameterizations(tmp_path):
     assert list(backend.client.experiment.arms_by_name) == [first_case.name]
 
 
+def test_tell_collapses_boundary_float_noise_onto_one_arm(tmp_path):
+    """Regression for #18: BO converging on a box boundary can emit
+    numerically-indistinguishable floats (e.g. ``500.0`` and
+    ``500.0000000000001``). Without range-level rounding, each hashes to a
+    distinct ``Arm.signature``, slipping past Ax's dedup and our
+    ``_arm_name_for_attachment`` lookup, and surfacing as "duplicate" top
+    designs. With the default ``digits`` applied to the dimension, the
+    values collapse onto the same arm before ever reaching Ax."""
+    exact = _make_case(tmp_path, "boundary-exact", value=0.5)
+    noisy_up = _make_case(tmp_path, "boundary-noisy-up", value=0.5 + 1e-14)
+    noisy_down = _make_case(tmp_path, "boundary-noisy-down", value=0.5 - 1e-14)
+
+    backend, objective = _make_normalized_backend(exact)
+    _evaluate_objective_batch([exact, noisy_up, noisy_down], objective)
+
+    # Sanity-check the precondition: default digits is set for a float range.
+    (dim,) = backend.dimensions
+    assert dim.digits is not None and dim.digits >= 11
+
+    backend.tell([exact, noisy_up, noisy_down])
+
+    for case in (exact, noisy_up, noisy_down):
+        assert case in backend._trial_index_case_mapping
+
+    arm_names = {
+        backend.client.experiment.trials[
+            backend._trial_index_case_mapping[c]
+        ].arm.name
+        for c in (exact, noisy_up, noisy_down)
+    }
+    assert arm_names == {exact.name}
+    assert list(backend.client.experiment.arms_by_name) == [exact.name]
+
+
 def test_prepare_for_acquisition_offload_serializes_normalized_outputs(
     tmp_path
 ):
@@ -300,7 +386,7 @@ def test_issue_style_search_space_encoding_matches_ax_schema():
             "value_type": "float",
             "bounds": [500.0, 2000.0],
             "log_scale": False,
-            "digits": None,
+            "digits": 8,
         },
         {
             "name": "position",

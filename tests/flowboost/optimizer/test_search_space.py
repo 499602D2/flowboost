@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from flowboost.openfoam.dictionary import DictionaryLink
-from flowboost.optimizer.search_space import Dimension
+from flowboost.optimizer.search_space import Dimension, _default_digits_for_bounds
 
 
 # Minimal DictionaryLink for constructing Dimension instances in tests
@@ -142,3 +142,56 @@ class TestDimensionCoerceValue:
         dim = Dimension.choice("s", _dummy_link(), ["a", "b", "c"])
         assert dim.value_type == "str"
         assert dim.coerce_value(42) == "42"
+
+
+class TestDefaultDigitsForBounds:
+    """Tests for the magnitude-aware default `digits` helper."""
+
+    @pytest.mark.parametrize(
+        "lower,upper,expected",
+        [
+            (500.0, 2000.0, 8),   # engineering range
+            (1.0, 100.0, 9),      # unit-scale
+            (0.1, 1.0, 11),       # sub-unit
+            (1e-9, 1e-7, 18),     # small-magnitude — must not round to zero
+            (-100.0, 100.0, 9),   # symmetric around zero
+            (0.0, 0.0, 12),       # degenerate — falls back to default
+        ],
+    )
+    def test_default_digits_scales_with_magnitude(self, lower, upper, expected):
+        assert _default_digits_for_bounds(lower, upper) == expected
+
+    def test_small_magnitude_bounds_are_not_zeroed(self):
+        """A value well inside [1e-9, 1e-7] must survive rounding intact."""
+        digits = _default_digits_for_bounds(1e-9, 1e-7)
+        value = 1.23456789e-8
+        assert round(value, digits) == pytest.approx(value, rel=1e-6)
+
+
+class TestDimensionRangeDefaultDigits:
+    """Range dimensions pick a sensible `digits` default for float dtypes."""
+
+    def test_float_range_gets_magnitude_aware_default(self):
+        dim = Dimension.range("x", _dummy_link(), 500.0, 2000.0)
+        assert dim.digits == 8
+
+    def test_explicit_digits_overrides_default(self):
+        dim = Dimension.range("x", _dummy_link(), 500.0, 2000.0, digits=4)
+        assert dim.digits == 4
+
+    def test_negative_digits_disables_rounding(self):
+        dim = Dimension.range("x", _dummy_link(), 500.0, 2000.0, digits=-1)
+        assert dim.digits is None
+
+    def test_int_range_leaves_digits_unset(self):
+        dim = Dimension.range("x", _dummy_link(), 0, 10, dtype=int)
+        assert dim.digits is None
+
+    def test_default_digits_collapse_float_noise(self):
+        """The practical purpose of the default: near-duplicate floats that BO
+        produces when converging on a box boundary must round to the same
+        value, so Ax's hash-based arm dedup can catch them."""
+        dim = Dimension.range("heatSource", _dummy_link(), 500.0, 2000.0)
+        noisy = [500.0, 500.0000000000001, 500.00000000000034]
+        rounded = {round(v, dim.digits) for v in noisy}
+        assert rounded == {500.0}

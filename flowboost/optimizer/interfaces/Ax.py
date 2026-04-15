@@ -1,6 +1,5 @@
 import json
 import logging
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -10,7 +9,7 @@ from ax.core.base_trial import BaseTrial
 from ax.service.ax_client import AxClient, ObjectiveProperties, TParameterization
 
 from flowboost.openfoam.case import Case
-from flowboost.optimizer.backend import Backend
+from flowboost.optimizer.backend import Backend, OptimizationComplete
 from flowboost.optimizer.objectives import AggregateObjective, Objective
 from flowboost.optimizer.scalars import coerce_objective_scalar
 from flowboost.optimizer.search_space import Dimension
@@ -81,6 +80,7 @@ class AxBackend(Backend):
         )
 
         logging.info("Ax experiment initialized")
+        self._initialized = True
 
     def produce_state_snapshot(self, save_in: Path) -> Path:
         """
@@ -320,18 +320,18 @@ class AxBackend(Backend):
         )
 
         if finished:
-            logging.info("🎉 Optimization finished")
-            sys.exit("Optimization finished: can not proceed further")
+            logging.info("Optimization finished")
+            raise OptimizationComplete(
+                "Ax reports the optimization is finished; no further trials "
+                "can be generated."
+            )
 
         logging.info(f"Received {len(new_parametrizations)} new trial(s) from Ax")
 
-        # TODO handle case where 0 trials returned and we don't want to ask for
-        # new trials. Can be at the end of Sobol seeding phase.
-        if len(new_parametrizations) == 0:
-            raise ValueError("Cannot proceed: no trials received (TODO fix)")
-
-        # Convert the parametrizations back to be mapped by Dimensions
-        # TODO: this discards the trial ID!
+        # Empty is a legitimate mid-run state — e.g. the current generation
+        # node is at its parallelism cap and needs more completions before it
+        # can advance. Return empty and let the caller decide (Session will
+        # skip this cycle).
         return new_parametrizations
 
     def tell(self, cases: list[Case]):
