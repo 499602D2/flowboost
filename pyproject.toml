@@ -76,3 +76,15 @@ log_cli = true
 log_cli_level = "INFO"
 log_cli_format = "%(asctime)s [%(levelname)8s] %(message)s (%(filename)s:%(lineno)s)"
 log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+# botorch 0.16.1 has a latent circular import in `botorch.acquisition` that
+# fires when any botorch submodule is imported cold from a submodule entry
+# point. pytest-xdist's controller process hits it when unserializing
+# `InputDataWarning`s emitted by Ax internals: the warning's category module
+# is `botorch.exceptions.warnings`, and the controller (which hasn't imported
+# botorch) imports it to rebuild the warning — triggering the circular.
+# Filter the warning by message so it never crosses the worker→controller
+# boundary. Category-based filters don't help because pytest resolves the
+# category class eagerly, which re-triggers the same import.
+filterwarnings = [
+    "ignore:Data .outcome observations. is not standardized",
+]
