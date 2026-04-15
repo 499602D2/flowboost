@@ -1,3 +1,4 @@
+import math
 import os
 import time
 from pathlib import Path
@@ -91,6 +92,55 @@ def _wait_for_finished_job(manager: Manager, timeout_seconds: int = 180):
 
     tracked = ", ".join(sorted(job.name for job in manager.job_pool)) or "none"
     raise TimeoutError(f"Timed out waiting for DockerLocal job(s): {tracked}")
+
+
+def _drain_all_finished_jobs(manager: Manager, timeout_seconds: int = 300):
+    """Wait until ``manager.job_pool`` is fully drained, returning every
+    job that finished along the way."""
+    drained = []
+    while manager.job_pool:
+        drained.extend(_wait_for_finished_job(manager, timeout_seconds))
+    return drained
+
+
+def _build_multidim_pitzdaily_session(
+    tmp_path: Path, max_evaluations: int, job_limit: int
+) -> Session:
+    """Multi-dim variant: two linear `Dimension.range`s, both boundary-prone,
+    plus a configurable job parallelism for stressing batched acquisitions."""
+    session = Session(
+        name="pitzDaily-docker-multidim",
+        data_dir=tmp_path / "session_data",
+        max_evaluations=max_evaluations,
+    )
+
+    template = _configure_pitzdaily_case(session.data_dir / "pitzDaily_template")
+    session.attach_template_case(case=template)
+
+    objective = Objective(
+        name="inlet_pressure",
+        minimize=True,
+        objective_function=_pressure_drop_objective,
+        normalization_step="min-max",
+    )
+    session.backend.set_objectives([objective])
+
+    inlet_k = Dictionary.link("0/k").entry("boundaryField/inlet/value")
+    inlet_eps = Dictionary.link("0/epsilon").entry("boundaryField/inlet/value")
+    session.backend.set_search_space(
+        [
+            Dimension.range(name="inlet_k", link=inlet_k, lower=0.1, upper=1.5),
+            Dimension.range(name="inlet_eps", link=inlet_eps, lower=1.0, upper=100.0),
+        ]
+    )
+
+    session.job_manager = Manager.create(
+        scheduler="dockerlocal", wdir=session.data_dir, job_limit=job_limit
+    )
+    session.job_manager.monitoring_interval = 1
+    session.backend.initialization_trials = 2
+    session.clean_pending_cases()
+    return session
 
 
 def _build_pitzdaily_session(tmp_path: Path, max_evaluations: int) -> Session:
@@ -259,3 +309,200 @@ def test_session_tell_allows_duplicate_parameterizations_with_dockerlocal(
     assert list(session.backend.client.experiment.arms_by_name) == [
         finished_cases[0].name
     ]
+
+
+def _assert_session_invariants(
+    session: Session, *, expected_on_disk: int, expected_told: int
+) -> None:
+    """Invariants that should hold after any completed loop_optimizer cycle.
+
+    ``expected_on_disk`` is the number of archived cases on the filesystem.
+    ``expected_told`` is how many of those cases have been through tell() —
+    during a normal cycle this lags on-disk by one, since the just-archived
+    case doesn't get told until the next loop iteration.
+    """
+    backend = session.backend
+    dims = backend.dimensions
+
+    finished = session.get_finished_cases(include_failed=False, batch_process=True)
+    assert len(finished) == expected_on_disk, (
+        f"finished case count drift: expected {expected_on_disk}, "
+        f"got {len(finished)}"
+    )
+
+    # Objective metadata sanity — finite float for every completed case.
+    for case in finished:
+        metadata = case.read_metadata() or {}
+        raw_objectives = metadata.get("objective-values-raw", {})
+        for obj in backend.objectives:
+            value = raw_objectives.get(obj.name)
+            assert value is not None, f"no raw objective for {case.name}/{obj.name}"
+            value = float(value)
+            assert math.isfinite(value), (
+                f"non-finite objective for {case.name}/{obj.name}: {value}"
+            )
+
+    # Backend-side checks only apply to cases that have been told().
+    mapping = backend._trial_index_case_mapping
+    assert len(mapping) == expected_told, (
+        f"trial mapping size drift: expected {expected_told}, got {len(mapping)}"
+    )
+
+    # Count *completed* trials — after ask() the experiment also holds one
+    # pending Ax-generated trial for the next suggestion, which has its own
+    # auto-generated arm name and isn't in our mapping.
+    completed_trials = [
+        t
+        for t in backend.client.experiment.trials.values()
+        if t.status.is_completed
+    ]
+    assert len(completed_trials) == expected_told, (
+        f"completed trial count drift: expected {expected_told}, "
+        f"got {len(completed_trials)}"
+    )
+
+    trial_indices = set()
+    for case, idx in mapping.items():
+        assert idx not in trial_indices, (
+            f"duplicate trial index {idx} across told cases"
+        )
+        trial_indices.add(idx)
+
+        trial = backend.client.experiment.trials[idx]
+        assert trial.status.is_completed, (
+            f"case {case.name} mapped to non-completed trial {idx}"
+        )
+        assert trial.arm is not None
+
+        # Arm parameters must exactly match what the case says it was run at,
+        # after coercion + rounding. Any drift here means a tell()-time value
+        # diverged from the on-disk case — exactly the bug class #18 hides.
+        case_params = case.parametrize_configuration(dims)
+        assert trial.arm.parameters == case_params, (
+            f"arm↔case param drift for {case.name}: "
+            f"arm={trial.arm.parameters} case={case_params}"
+        )
+
+
+def _drive_one_cycle(session: Session) -> Case | None:
+    """Run loop_optimizer_once → submit → wait → archive. Returns the
+    archived case, or None if the optimizer declined to suggest anything."""
+    manager = session.job_manager
+    assert manager is not None
+
+    new_cases = session.loop_optimizer_once(num_new_cases=1)
+    if not new_cases:
+        return None
+    (case,) = new_cases
+
+    assert manager.submit_case(case)
+    job = _wait_for_finished_job(manager)[0]
+    dest = session.archival_dir / job.wdir.name
+    assert manager.move_data_for_job(job, dest)
+    archived = Case(dest)
+    archived.post_evaluation_update(job.to_dict())
+    return archived
+
+
+def test_session_docker_soak(docker_foam_runtime, tmp_path):
+    """End-to-end soak: run many full tell/ask cycles and assert invariants
+    after each one. Intended to surface state-management regressions that
+    unit tests don't catch (stale mappings, arm duplication, value drift,
+    persistence round-trips)."""
+    num_cycles = 12
+    session = _build_pitzdaily_session(tmp_path, max_evaluations=num_cycles)
+    session.backend.initialize()
+
+    completed = 0
+    for cycle in range(1, num_cycles + 1):
+        archived = _drive_one_cycle(session)
+        assert archived is not None, f"optimizer yielded nothing at cycle {cycle}"
+        completed += 1
+        # loop_optimizer_once tells cases from previous cycles before asking,
+        # so the just-archived case isn't in the mapping yet.
+        _assert_session_invariants(
+            session,
+            expected_on_disk=completed,
+            expected_told=completed - 1,
+        )
+
+    # Final flush: tell all completed cases so every archived case lands in
+    # the backend mapping, then run the full invariant battery with no lag.
+    # Pass batch_process=True to populate each case's objective outputs —
+    # tell() requires cases that have already been evaluated.
+    session.backend.tell(
+        session.get_finished_cases(include_failed=False, batch_process=True)
+    )
+    _assert_session_invariants(
+        session,
+        expected_on_disk=completed,
+        expected_told=completed,
+    )
+
+    # Persistence round-trip: rebuild a Session pointing at the same
+    # data_dir and confirm the finished-case set is fully recoverable.
+    restored = Session(
+        name="pitzDaily-docker-test",
+        data_dir=session.data_dir,
+        max_evaluations=num_cycles,
+    )
+    restored_finished = restored.get_finished_cases(include_failed=False)
+    assert len(restored_finished) == completed
+    assert {c.name for c in restored_finished} == {
+        c.name for c in session.get_finished_cases(include_failed=False)
+    }
+
+
+def test_session_docker_soak_multidim_parallel(docker_foam_runtime, tmp_path):
+    """End-to-end soak with a 2-dim linear search space running two cases
+    in parallel per cycle. Stresses batched attach/complete, pending-case
+    handling, and the new digits default on multi-dim BO convergence."""
+    batch_size = 2
+    num_cycles = 4
+    total_evaluations = batch_size * num_cycles
+    session = _build_multidim_pitzdaily_session(
+        tmp_path, max_evaluations=total_evaluations, job_limit=batch_size
+    )
+    session.backend.initialize()
+    manager = session.job_manager
+    assert manager is not None
+
+    # Sanity-check the precondition: default digits is applied to both dims.
+    assert all(dim.digits is not None for dim in session.backend.dimensions)
+
+    completed = 0
+    for cycle in range(1, num_cycles + 1):
+        new_cases = session.loop_optimizer_once(num_new_cases=batch_size)
+        assert len(new_cases) == batch_size, (
+            f"cycle {cycle} yielded {len(new_cases)} cases, expected {batch_size}"
+        )
+
+        for case in new_cases:
+            assert manager.submit_case(case)
+
+        finished_jobs = _drain_all_finished_jobs(manager)
+        assert len(finished_jobs) == batch_size
+
+        for job in finished_jobs:
+            dest = session.archival_dir / job.wdir.name
+            assert manager.move_data_for_job(job, dest)
+            Case(dest).post_evaluation_update(job.to_dict())
+
+        completed += batch_size
+        # On cycle 1 the tell() preceding ask() saw no finished cases, so the
+        # backend mapping still lags the on-disk count by `batch_size`.
+        _assert_session_invariants(
+            session,
+            expected_on_disk=completed,
+            expected_told=completed - batch_size,
+        )
+
+    # Final flush.
+    session.backend.tell(
+        session.get_finished_cases(include_failed=False, batch_process=True)
+    )
+    _assert_session_invariants(
+        session,
+        expected_on_disk=completed,
+        expected_told=completed,
+    )
