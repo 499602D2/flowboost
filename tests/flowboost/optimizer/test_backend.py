@@ -429,23 +429,21 @@ def test_issue_style_search_space_encoding_matches_ax_schema():
     ]
 
 
-def test_issue_style_generation_can_repeat_without_deduplication(tmp_path):
-    backend, objective = _make_issue_style_backend(
+def test_issue_style_generation_propagates_disabled_deduplication():
+    # Behaviorally forcing Ax to return a duplicate is fragile: the Sobol
+    # engine is quasi-random and the BO step's rejection sampler rejects
+    # repeats independently of `should_deduplicate`, so the outcome hinges
+    # on the exact Ax version. Instead, verify the flag is plumbed through
+    # to every generation step — that is the invariant FlowBoost owns.
+    backend, _ = _make_issue_style_backend(
         random_seed=0,
         should_deduplicate=False,
     )
+    backend.initialize()
 
-    suggestions, duplicate_at, duplicate = _collect_issue_style_suggestions(
-        tmp_path,
-        backend,
-        objective,
-        limit=10,
-    )
-
-    assert duplicate_at is not None
-    assert duplicate_at <= 10
-    assert duplicate is not None
-    assert duplicate in suggestions
+    steps = backend.client.generation_strategy._steps
+    assert steps, "Expected at least one generation step"
+    assert all(step.should_deduplicate is False for step in steps)
 
 
 def test_issue_style_generation_avoids_repeats_with_deduplication(tmp_path):
