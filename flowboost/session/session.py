@@ -766,7 +766,10 @@ class Session:
         Returns:
             bool: True if optimization should stop, False otherwise
         """
-        finished_cases = self.get_finished_cases(include_failed=False)
+        finished_cases = self.get_finished_cases(
+            include_failed=False,
+            batch_process=self.target_value is not None,
+        )
 
         # Criterion 1: Maximum number of evaluations
         if self.max_evaluations is not None:

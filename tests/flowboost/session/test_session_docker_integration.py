@@ -613,10 +613,6 @@ def test_session_target_value_termination(docker_foam_runtime, tmp_path):
     archived = _drive_one_cycle(session)
     assert archived is not None
 
-    # `_check_termination_criteria` reads `objective-values-raw` from case
-    # metadata, which only gets written once `batch_process` has run on the
-    # case. Trigger it the same way `Session.local_optimization` would.
-    session.get_finished_cases(include_failed=False, batch_process=True)
     assert session._check_termination_criteria() is True
 
 
