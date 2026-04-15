@@ -81,6 +81,37 @@ def test_ask_raises_optimization_complete_instead_of_sys_exit(Ax_backend, monkey
         Ax_backend.ask(max_cases=1)
 
 
+def test_ask_with_no_initialization_and_no_data_raises_clear_error(Ax_backend):
+    """init_trials=0 + no attached trials used to produce an opaque Ax
+    DataRequiredError deep in the transform pipeline. It should now surface
+    as a FlowBoost-level ValueError pointing at the fix."""
+    Ax_backend.initialization_trials = 0
+    Ax_backend.initialize()
+
+    with pytest.raises(ValueError, match="no observations to fit a surrogate"):
+        Ax_backend.ask(max_cases=1)
+
+
+def test_ask_with_no_initialization_but_cold_start_trials_works(tmp_path):
+    """init_trials=0 is legitimate when the caller attaches cold-start trials
+    via tell() before ask(). This path must keep working."""
+    first = _make_case(tmp_path, "cold-a", value=0.25)
+    second = _make_case(tmp_path, "cold-b", value=0.75)
+    backend, objective = _make_normalized_backend(first)
+    backend.initialization_trials = 0
+    # Re-initialize so the init_trials=0 setting takes effect.
+    backend._initialized = False
+    backend.client = backend.client.__class__()
+    backend.initialize()
+
+    _evaluate_objective_batch([first, second], objective)
+    backend.tell([first, second])
+
+    # With two cold-start trials attached, BO should be able to generate.
+    suggestion = backend.ask(max_cases=1)
+    assert len(suggestion) == 1
+
+
 def test_ask_returns_empty_when_backend_yields_no_trials(Ax_backend, monkeypatch):
     """An empty generator response (e.g. parallelism cap reached mid-run) is
     a legitimate state; ask() should return an empty list, not raise."""
