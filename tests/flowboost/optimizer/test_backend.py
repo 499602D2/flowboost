@@ -222,6 +222,40 @@ def test_tell_reuses_existing_arm_for_duplicate_parameterizations(tmp_path):
     assert list(backend.client.experiment.arms_by_name) == [first_case.name]
 
 
+def test_tell_collapses_boundary_float_noise_onto_one_arm(tmp_path):
+    """Regression for #18: BO converging on a box boundary can emit
+    numerically-indistinguishable floats (e.g. ``500.0`` and
+    ``500.0000000000001``). Without range-level rounding, each hashes to a
+    distinct ``Arm.signature``, slipping past Ax's dedup and our
+    ``_arm_name_for_attachment`` lookup, and surfacing as "duplicate" top
+    designs. With the default ``digits`` applied to the dimension, the
+    values collapse onto the same arm before ever reaching Ax."""
+    exact = _make_case(tmp_path, "boundary-exact", value=0.5)
+    noisy_up = _make_case(tmp_path, "boundary-noisy-up", value=0.5 + 1e-14)
+    noisy_down = _make_case(tmp_path, "boundary-noisy-down", value=0.5 - 1e-14)
+
+    backend, objective = _make_normalized_backend(exact)
+    _evaluate_objective_batch([exact, noisy_up, noisy_down], objective)
+
+    # Sanity-check the precondition: default digits is set for a float range.
+    (dim,) = backend.dimensions
+    assert dim.digits is not None and dim.digits >= 11
+
+    backend.tell([exact, noisy_up, noisy_down])
+
+    for case in (exact, noisy_up, noisy_down):
+        assert case in backend._trial_index_case_mapping
+
+    arm_names = {
+        backend.client.experiment.trials[
+            backend._trial_index_case_mapping[c]
+        ].arm.name
+        for c in (exact, noisy_up, noisy_down)
+    }
+    assert arm_names == {exact.name}
+    assert list(backend.client.experiment.arms_by_name) == [exact.name]
+
+
 def test_prepare_for_acquisition_offload_serializes_normalized_outputs(
     tmp_path
 ):
@@ -300,7 +334,7 @@ def test_issue_style_search_space_encoding_matches_ax_schema():
             "value_type": "float",
             "bounds": [500.0, 2000.0],
             "log_scale": False,
-            "digits": None,
+            "digits": 8,
         },
         {
             "name": "position",
