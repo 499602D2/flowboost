@@ -143,16 +143,12 @@ def _build_multidim_pitzdaily_session(
     return session
 
 
-def _build_pitzdaily_session(tmp_path: Path, max_evaluations: int) -> Session:
-    session = Session(
-        name="pitzDaily-docker-test",
-        data_dir=tmp_path / "session_data",
-        max_evaluations=max_evaluations,
-    )
-
-    template = _configure_pitzdaily_case(session.data_dir / "pitzDaily_template")
-    session.attach_template_case(case=template)
-
+def _apply_pitzdaily_backend_config(
+    session: Session, initialization_trials: int = 1, job_limit: int = 1
+) -> None:
+    """Apply the objective, search space, and manager to a Session. Works on
+    both a freshly-built session and a restored one — neither persists
+    objectives (they're Python callables) or search-space dimensions."""
     objective = Objective(
         name="inlet_pressure",
         minimize=True,
@@ -175,11 +171,37 @@ def _build_pitzdaily_session(tmp_path: Path, max_evaluations: int) -> Session:
     )
 
     session.job_manager = Manager.create(
-        scheduler="dockerlocal", wdir=session.data_dir, job_limit=1
+        scheduler="dockerlocal", wdir=session.data_dir, job_limit=job_limit
     )
     session.job_manager.monitoring_interval = 1
-    session.backend.initialization_trials = 1
+    session.backend.initialization_trials = initialization_trials
+
+
+def _build_pitzdaily_session(tmp_path: Path, max_evaluations: int) -> Session:
+    session = Session(
+        name="pitzDaily-docker-test",
+        data_dir=tmp_path / "session_data",
+        max_evaluations=max_evaluations,
+    )
+
+    template = _configure_pitzdaily_case(session.data_dir / "pitzDaily_template")
+    session.attach_template_case(case=template)
+
+    _apply_pitzdaily_backend_config(session)
     session.clean_pending_cases()
+    return session
+
+
+def _restore_pitzdaily_session(data_dir: Path, max_evaluations: int) -> Session:
+    """Rebuild a Session pointing at an existing data_dir. `Session.__init__`
+    auto-restores the template and backend type from the persisted TOML, but
+    the search space, objectives, and job manager must be re-applied."""
+    session = Session(
+        name="pitzDaily-docker-test",
+        data_dir=data_dir,
+        max_evaluations=max_evaluations,
+    )
+    _apply_pitzdaily_backend_config(session)
     return session
 
 
@@ -451,6 +473,211 @@ def test_session_docker_soak(docker_foam_runtime, tmp_path):
     assert {c.name for c in restored_finished} == {
         c.name for c in session.get_finished_cases(include_failed=False)
     }
+
+
+def test_session_docker_soak_reload_with_pending_case(docker_foam_runtime, tmp_path):
+    """Reload scenario where a case is sitting in the pending_dir (generated
+    but not yet archived) at the moment the client dies. Session B must
+    rediscover it via get_pending_cases(), attach it as a pending
+    observation, and not duplicate it in the next suggestion."""
+    session_a = _build_pitzdaily_session(tmp_path, max_evaluations=3)
+    # Use a larger Sobol budget so that the Sobol step can still generate
+    # additional trials on the second session even with one arm already
+    # pending (the Sobol step's default MaxTrialsAwaitingData=1 would
+    # otherwise pause it after attaching the pending case).
+    session_a.backend.initialization_trials = 3
+    session_a.backend._initialized = False
+    session_a.backend.client = session_a.backend.client.__class__()
+    session_a.backend.initialize()
+
+    # Generate a case but don't submit it — it stays in pending_dir.
+    generated = session_a.loop_optimizer_once(num_new_cases=1)
+    assert len(generated) == 1
+    pending_name = generated[0].name
+    pending_params = generated[0].parametrize_configuration(session_a.backend.dimensions)
+
+    del session_a
+
+    session_b = _restore_pitzdaily_session(
+        tmp_path / "session_data", max_evaluations=3
+    )
+    session_b.backend.initialization_trials = 3
+    session_b.backend._initialized = False
+    session_b.backend.client = session_b.backend.client.__class__()
+    session_b.backend.initialize()
+
+    pending = session_b.get_pending_cases()
+    assert {c.name for c in pending} == {pending_name}
+
+    # Ask for a new suggestion. With the pending case attached, Ax should
+    # avoid proposing the same parameters.
+    more = session_b.loop_optimizer_once(num_new_cases=1)
+    assert len(more) == 1
+    new_params = more[0].parametrize_configuration(session_b.backend.dimensions)
+    assert new_params != pending_params, (
+        f"Session B duplicated the pending case params: {new_params}"
+    )
+
+    # Submit the two cases sequentially (default job_limit=1).
+    manager = session_b.job_manager
+    assert manager is not None
+    for case in (pending[0], more[0]):
+        assert manager.submit_case(case)
+        job = _wait_for_finished_job(manager)[0]
+        dest = session_b.archival_dir / job.wdir.name
+        assert manager.move_data_for_job(job, dest)
+        Case(dest).post_evaluation_update(job.to_dict())
+
+    finished = session_b.get_finished_cases(include_failed=False, batch_process=True)
+    assert len(finished) == 2
+    assert {c.name for c in finished} == {pending_name, more[0].name}
+
+
+def test_session_docker_soak_routes_failed_case_and_continues(
+    docker_foam_runtime, tmp_path
+):
+    """Simulation runs cleanly but the objective returns None — e.g. when
+    the configured function object didn't produce data, or a post-processing
+    script couldn't parse the output. The case must be routed through
+    attach_failed_cases, not block the loop, and the next cycle must still
+    produce a suggestion."""
+    session = Session(
+        name="pitzDaily-docker-test",
+        data_dir=tmp_path / "session_data",
+        max_evaluations=3,
+    )
+    template = _configure_pitzdaily_case(session.data_dir / "pitzDaily_template")
+    session.attach_template_case(case=template)
+
+    # Objective always returns None — the failure path regardless of what
+    # the simulation actually produced.
+    session.backend.set_objectives([
+        Objective(
+            name="inlet_pressure",
+            minimize=True,
+            objective_function=lambda _case: None,
+            normalization_step="min-max",
+        )
+    ])
+    inlet_k = Dictionary.link("0/k").entry("boundaryField/inlet/value")
+    session.backend.set_search_space([
+        Dimension.range(name="inlet_k", link=inlet_k, lower=0.1, upper=1.5, log_scale=True)
+    ])
+    session.job_manager = Manager.create(
+        scheduler="dockerlocal", wdir=session.data_dir, job_limit=1
+    )
+    session.job_manager.monitoring_interval = 1
+    session.backend.initialization_trials = 2
+    session.clean_pending_cases()
+    session.backend.initialize()
+
+    archived = _drive_one_cycle(session)
+    assert archived is not None
+
+    # After batch_process runs (inside get_finished_cases(batch_process=True)),
+    # the failed case should be isolated from the successful set.
+    successful = session.get_finished_cases(include_failed=False, batch_process=True)
+    failed = session.get_failed_cases()
+    assert len(successful) == 0
+    assert len(failed) == 1
+    assert failed[0].name == archived.name
+
+    # A second cycle must still work — attach_failed_cases should abandon the
+    # failed trial without crashing and generate a new suggestion.
+    archived_2 = _drive_one_cycle(session)
+    assert archived_2 is not None
+    assert archived_2.name != archived.name
+
+
+def test_session_target_value_termination(docker_foam_runtime, tmp_path):
+    """`target_value` + `target_objective` should trip
+    `_check_termination_criteria` as soon as an archived case meets the
+    bound. Using an intentionally lenient bound so the first Sobol point
+    satisfies it."""
+    session = Session(
+        name="pitzDaily-docker-test",
+        data_dir=tmp_path / "session_data",
+        max_evaluations=10,
+        target_value=1.0e9,  # minimize objective; any finite pressure beats this
+        target_objective="inlet_pressure",
+    )
+    template = _configure_pitzdaily_case(session.data_dir / "pitzDaily_template")
+    session.attach_template_case(case=template)
+    _apply_pitzdaily_backend_config(session)
+    session.clean_pending_cases()
+    session.backend.initialize()
+
+    # Before any case runs, no termination.
+    assert session._check_termination_criteria() is False
+
+    archived = _drive_one_cycle(session)
+    assert archived is not None
+
+    # `_check_termination_criteria` reads `objective-values-raw` from case
+    # metadata, which only gets written once `batch_process` has run on the
+    # case. Trigger it the same way `Session.local_optimization` would.
+    session.get_finished_cases(include_failed=False, batch_process=True)
+    assert session._check_termination_criteria() is True
+
+
+def test_session_docker_soak_survives_mid_run_reload(docker_foam_runtime, tmp_path):
+    """End-to-end async restart: run a few cycles, throw away the Session,
+    rebuild a fresh Session pointing at the same data_dir, run more cycles
+    and verify the optimizer picked up where it left off (no duplicates, no
+    re-running Sobol, backend state consistent with the restarted run).
+
+    This is the scenario FlowBoost is actually designed for — the client
+    machine can stop for hours while jobs run on the cluster, then come
+    back and continue from the filesystem."""
+    pre_cycles = 3
+    post_cycles = 3
+    total = pre_cycles + post_cycles
+
+    # --- First session: run a few cycles, then drop it ---
+    session_a = _build_pitzdaily_session(tmp_path, max_evaluations=total)
+    session_a.backend.initialize()
+
+    for cycle in range(1, pre_cycles + 1):
+        archived = _drive_one_cycle(session_a)
+        assert archived is not None, f"pre-reload cycle {cycle} yielded nothing"
+
+    pre_finished = {c.name for c in session_a.get_finished_cases(include_failed=False)}
+    assert len(pre_finished) == pre_cycles
+
+    # Drop all references to session_a and its backend. The filesystem is
+    # now the only source of truth.
+    del session_a
+
+    # --- Second session: rebuild from the same data_dir ---
+    session_b = _restore_pitzdaily_session(tmp_path / "session_data", max_evaluations=total)
+    session_b.backend.initialize()
+
+    # Rehydrated session must see the prior finished cases from disk.
+    rehydrated = {c.name for c in session_b.get_finished_cases(include_failed=False)}
+    assert rehydrated == pre_finished
+
+    # Run post_cycles more cycles. Each cycle's tell() must bring the
+    # rehydrated cases into the fresh backend and advance the optimizer.
+    for cycle in range(1, post_cycles + 1):
+        archived = _drive_one_cycle(session_b)
+        assert archived is not None, f"post-reload cycle {cycle} yielded nothing"
+
+    # Invariants on the final state.
+    post_finished = session_b.get_finished_cases(
+        include_failed=False, batch_process=True
+    )
+    assert len(post_finished) == total
+
+    # Every case that was present before the reload is still present after.
+    assert pre_finished.issubset({c.name for c in post_finished})
+
+    # Final flush so every archived case is in the backend mapping.
+    session_b.backend.tell(post_finished)
+    _assert_session_invariants(
+        session_b,
+        expected_on_disk=total,
+        expected_told=total,
+    )
 
 
 def test_session_docker_soak_multidim_parallel(docker_foam_runtime, tmp_path):
