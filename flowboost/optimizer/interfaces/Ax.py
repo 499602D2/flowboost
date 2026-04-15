@@ -15,6 +15,11 @@ from flowboost.optimizer.objectives import AggregateObjective, Objective
 from flowboost.optimizer.scalars import coerce_objective_scalar
 from flowboost.optimizer.search_space import Dimension
 
+# Mirrors `ax.generation_strategy.dispatch_utils.DEFAULT_BAYESIAN_CONCURRENCY`.
+# We re-declare it so the BO-step parallelism cap stays explicit after we
+# disable `enforce_sequential_optimization` (see `AxBackend.initialize`).
+DEFAULT_BO_CONCURRENCY = 3
+
 
 class AxBackend(Backend):
     def __init__(self, stateless: bool = True):
@@ -66,6 +71,17 @@ class AxBackend(Backend):
 
         logging.info(f"Ax initialization: num_initialization_trials={num_init}")
 
+        if self.max_parallelism is None:
+            max_parallelism_override = DEFAULT_BO_CONCURRENCY
+        else:
+            max_parallelism_override = self.max_parallelism
+            if max_parallelism_override > DEFAULT_BO_CONCURRENCY:
+                logging.warning(
+                    f"max_parallelism={max_parallelism_override} exceeds Ax's "
+                    f"recommended BO concurrency ({DEFAULT_BO_CONCURRENCY}); "
+                    "the surrogate benefits from more sequential observations."
+                )
+
         # Create a stateless optimizer client
         self.client.create_experiment(
             parameters=self._get_ax_search_space(),
@@ -76,9 +92,16 @@ class AxBackend(Backend):
                 "num_initialization_trials": num_init,
                 "use_saasbo": self.SAASBO,
                 "disable_progbar": False,
-                "max_parallelism_override": self.max_parallelism,
+                "max_parallelism_override": max_parallelism_override,
                 "random_seed": self.random_seed,
                 "should_deduplicate": self.should_deduplicate,
+                # Drops the Sobol step's `MaxTrialsAwaitingData` pausing
+                # criterion, which otherwise starves low-`num_init` configs
+                # after a reload attaches a pending RUNNING trial. Concurrency
+                # is still bounded by `MaxGenerationParallelism` via
+                # `max_parallelism_override`, and flowboost's Manager caps
+                # total in-flight jobs externally.
+                "enforce_sequential_optimization": False,
             },
         )
 

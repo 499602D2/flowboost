@@ -481,13 +481,6 @@ def test_session_docker_soak_reload_with_pending_case(docker_foam_runtime, tmp_p
     rediscover it via get_pending_cases(), attach it as a pending
     observation, and not duplicate it in the next suggestion."""
     session_a = _build_pitzdaily_session(tmp_path, max_evaluations=3)
-    # Use a larger Sobol budget so that the Sobol step can still generate
-    # additional trials on the second session even with one arm already
-    # pending (the Sobol step's default MaxTrialsAwaitingData=1 would
-    # otherwise pause it after attaching the pending case).
-    session_a.backend.initialization_trials = 3
-    session_a.backend._initialized = False
-    session_a.backend.client = session_a.backend.client.__class__()
     session_a.backend.initialize()
 
     # Generate a case but don't submit it — it stays in pending_dir.
@@ -501,9 +494,6 @@ def test_session_docker_soak_reload_with_pending_case(docker_foam_runtime, tmp_p
     session_b = _restore_pitzdaily_session(
         tmp_path / "session_data", max_evaluations=3
     )
-    session_b.backend.initialization_trials = 3
-    session_b.backend._initialized = False
-    session_b.backend.client = session_b.backend.client.__class__()
     session_b.backend.initialize()
 
     pending = session_b.get_pending_cases()
