@@ -438,7 +438,12 @@ class Case:
         for obj in objectives:
             out = obj.data_for_case(self, post_processed=True)
             if out is None:
-                raise ValueError(f"Objective='{obj.name}' output None for case {self}")
+                raise ValueError(
+                    f"Objective '{obj.name}' has no post-processed output for "
+                    f"case {self}. The case has not been evaluated yet — run "
+                    f"Backend.batch_process([case]) first, or fetch finished "
+                    f"cases via Session.get_finished_cases(batch_process=True)."
+                )
 
             output_mapping[obj.name] = coerce_objective_scalar(
                 out,

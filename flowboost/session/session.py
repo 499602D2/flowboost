@@ -13,7 +13,7 @@ from flowboost.openfoam.case import Case, path_is_foam_dir, unique_id
 from flowboost.openfoam.dictionary import Dictionary, DictionaryLink, DictionaryReader
 from flowboost.openfoam.types import FOAMType
 from flowboost.optimizer.acquisition_offload import OFFLOAD_SCRIPT
-from flowboost.optimizer.backend import DEFAULT_OFFLOAD_RESULT_FNAME
+from flowboost.optimizer.backend import DEFAULT_OFFLOAD_RESULT_FNAME, OptimizationComplete
 from flowboost.optimizer.interfaces.Ax import Backend
 from flowboost.optimizer.search_space import Dimension
 
@@ -217,7 +217,13 @@ class Session:
             self.print_top_designs(n=5)
 
             if was_acq_job:
-                self.handle_finished_acquisition_job(finished[0])
+                try:
+                    self.handle_finished_acquisition_job(finished[0])
+                except OptimizationComplete as exc:
+                    logging.info(f"Backend reports optimization complete: {exc}")
+                    self._write_designs_log()
+                    logging.info("Optimization complete!")
+                    return
                 continue
 
             for job in finished:
@@ -242,7 +248,13 @@ class Session:
                 return
 
             logging.info("Entering optimizer loop")
-            new_cases = self.loop_optimizer_once(num_new_cases=free_slots)
+            try:
+                new_cases = self.loop_optimizer_once(num_new_cases=free_slots)
+            except OptimizationComplete as exc:
+                logging.info(f"Backend reports optimization complete: {exc}")
+                self._write_designs_log()
+                logging.info("Optimization complete!")
+                return
 
             for case in new_cases:
                 self.job_manager.submit_case(
@@ -374,8 +386,10 @@ class Session:
 
         # THIS IS WHERE OPTIMIZATION COMPLETION IS CHECKED
         if data.get("status_finished", False) is True:
-            logging.info("Backends reported optimization as finished: exiting")
-            sys.exit("Optimization finished")
+            logging.info("Backend reported optimization as finished via offload result")
+            raise OptimizationComplete(
+                "Offloaded acquisition result reports optimization finished."
+            )
 
         logging.info(
             f"Loading acquisition result, created at: {data.get('created_at', 'unknown')}"

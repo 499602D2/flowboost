@@ -5,6 +5,7 @@ import pytest
 
 from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
+from flowboost.optimizer.backend import OptimizationComplete
 from flowboost.optimizer.interfaces.Ax import AxBackend
 from flowboost.optimizer.objectives import Objective
 from flowboost.optimizer.search_space import Dimension
@@ -54,6 +55,57 @@ def Ax_backend() -> AxBackend:
 
 def test_initialization(Ax_backend):
     Ax_backend.initialize()
+
+
+def test_ask_before_initialize_raises_clear_error(Ax_backend):
+    """Calling ask() on a fresh backend used to surface a deep Ax
+    AssertionError; it should now raise a FlowBoost-level guidance message."""
+    with pytest.raises(RuntimeError, match="called before initialize"):
+        Ax_backend.ask(max_cases=1)
+
+
+def test_ask_raises_optimization_complete_instead_of_sys_exit(Ax_backend, monkeypatch):
+    """The backend used to call sys.exit when Ax reported the optimization
+    finished, which would kill the host process. It should now raise a
+    dedicated exception the caller can catch."""
+    Ax_backend.initialize()
+
+    def fake_get_next_trials(*args, **kwargs):
+        return ({}, True)  # empty parametrizations, finished=True
+
+    monkeypatch.setattr(
+        Ax_backend.client, "get_next_trials", fake_get_next_trials
+    )
+
+    with pytest.raises(OptimizationComplete):
+        Ax_backend.ask(max_cases=1)
+
+
+def test_ask_returns_empty_when_backend_yields_no_trials(Ax_backend, monkeypatch):
+    """An empty generator response (e.g. parallelism cap reached mid-run) is
+    a legitimate state; ask() should return an empty list, not raise."""
+    Ax_backend.initialize()
+
+    def fake_get_next_trials(*args, **kwargs):
+        return ({}, False)  # empty, not finished
+
+    monkeypatch.setattr(
+        Ax_backend.client, "get_next_trials", fake_get_next_trials
+    )
+
+    assert Ax_backend.ask(max_cases=1) == []
+
+
+def test_tell_on_unevaluated_case_raises_clear_error(tmp_path):
+    """Calling tell() with a case that hasn't been batch-processed used to
+    blow up with 'output None for case ...' from deep inside Case; it should
+    now point the caller at batch_process / get_finished_cases(batch_process=True)."""
+    unevaluated = _make_case(tmp_path, "unevaluated", value=0.5)
+    backend, _ = _make_normalized_backend(unevaluated)
+    other = _make_case(tmp_path, "other", value=0.25)
+
+    with pytest.raises(ValueError, match="has not been evaluated"):
+        backend.tell([other])
 
 
 def test_tell(Ax_backend, test_case, foam_in_env):
