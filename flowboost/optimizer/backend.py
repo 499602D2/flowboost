@@ -156,9 +156,10 @@ class Backend(ABC):
         # Save a state snapshot
         model_snapshot = self.produce_state_snapshot(save_in)
 
-        # Ensure case names are unique
-        if len(set([c.name for c in finished_cases])) != len(finished_cases):
-            raise ValueError("All case names must be unique: cannot proceed")
+        self._ensure_unique_case_names(
+            [*finished_cases, *pending_cases],
+            context="finished and pending cases",
+        )
 
         # Construct one dictionary, keyed by names (Case isn't serializable)
         serializable = {
@@ -187,6 +188,16 @@ class Backend(ABC):
             f"Saved data snapshot (parameters + obj.f. outputs) [{data_snapshot}]"
         )
         return (model_snapshot, data_snapshot)
+
+    @staticmethod
+    def _ensure_unique_case_names(cases: list[Case], *, context: str) -> None:
+        names = [case.name for case in cases]
+        duplicate_names = sorted({name for name in names if names.count(name) > 1})
+        if duplicate_names:
+            duplicates = ", ".join(duplicate_names)
+            raise ValueError(
+                f"Case names must be unique across {context}: {duplicates}"
+            )
 
     @abstractmethod
     def produce_state_snapshot(self, save_in: Path) -> Path:
@@ -264,8 +275,12 @@ class Backend(ABC):
                 }
 
                 # Raw value (before post-processing)
+                raw_output = raw_outputs[obj_idx][case_idx]
+                if isinstance(objective, AggregateObjective):
+                    raw_output = objective.aggregate_outputs([raw_output])[0]
+
                 raw_objective_results[objective.name] = coerce_objective_scalar(
-                    raw_outputs[obj_idx][case_idx],
+                    raw_output,
                     label=f"Raw objective '{objective.name}' output",
                 )
 

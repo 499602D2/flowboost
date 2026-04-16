@@ -18,7 +18,7 @@ class Objective:
         name: str,
         minimize: bool,
         objective_function: Callable,
-        objective_function_kwargs: dict = {},
+        objective_function_kwargs: Optional[dict[str, Any]] = None,
         normalization_step: Optional[
             Literal["min-max", "yeo-johnson", "box-cox"]
         ] = None,
@@ -79,7 +79,9 @@ class Objective:
         # Additional data that gets passed to the objective function. This can
         # be anything, potentially an aggregated DataFrame for a baseline
         # simulation used for comparisons, or something more esoteric.
-        self.objective_function_kwargs: dict = objective_function_kwargs
+        self.objective_function_kwargs: dict[str, Any] = dict(
+            objective_function_kwargs or {}
+        )
 
         # Any post-processing steps to be completed for this objective.
         # Post-processing is performed once _all_ Case objects have had the
@@ -203,7 +205,7 @@ class Objective:
             return None
 
         if self.objective_function_kwargs:
-            out = self.objective_function(case, self.objective_function_kwargs)
+            out = self.objective_function(case, **self.objective_function_kwargs)
         else:
             out = self.objective_function(case)
 
@@ -315,17 +317,36 @@ class AggregateObjective:
         """
         self._post_processing_steps.append((step, kwargs))
 
-    def evaluate(self, case: Case) -> tuple:
+    def evaluate(self, case: Case, save_value: bool = True) -> Optional[tuple[Any, ...]]:
+        if case.success is False:
+            logging.warning("Case has been marked as failed: not evaluating objective")
+            return None
+
         objective_outputs = [
-            obj.evaluate(case, save_value=False) for obj in self.objectives
+            obj.evaluate(case, save_value=save_value) for obj in self.objectives
         ]
 
-        self._objective_output_data[case] = objective_outputs
-        return tuple(objective_outputs)
+        if any(output is None for output in objective_outputs):
+            return None
 
-    def _evaluate_batch(self, cases: list[Case]) -> list[tuple]:
-        all_outputs = [self.evaluate(case) for case in cases]
+        output_tuple = tuple(objective_outputs)
+        if save_value:
+            self._objective_output_data[case] = list(output_tuple)
+
+        return output_tuple
+
+    def _evaluate_batch(
+        self, cases: list[Case], save_values: bool = False
+    ) -> list[Optional[tuple[Any, ...]]]:
+        all_outputs = [
+            self.evaluate(case, save_value=save_values) for case in cases
+        ]
         return all_outputs
+
+    def batch_evaluate(
+        self, cases: list[Case], save_values: bool = False
+    ) -> list[Optional[tuple[Any, ...]]]:
+        return self._evaluate_batch(cases, save_values=save_values)
 
     def apply_batch_post_processing(self, all_outputs: list[tuple]) -> list[tuple]:
         # Apply post-processing steps suitable for batch-level processing
@@ -352,20 +373,52 @@ class AggregateObjective:
         ]
         return aggregated_values
 
+    def batch_post_process(
+        self,
+        cases: list[Case],
+        outputs: list[tuple[Any, ...]],
+        save_values: bool = True,
+    ) -> list[float]:
+        if len(outputs) != len(cases):
+            raise ValueError(
+                f"Case count != output count: cases={cases}, outputs={outputs}"
+            )
+
+        if not outputs:
+            return []
+
+        processed_outputs = self.apply_batch_post_processing(outputs)
+        aggregated_outputs = [
+            coerce_objective_scalar(
+                out,
+                label=f"Post-processed aggregate objective '{self.name}' output",
+            )
+            for out in self.aggregate_outputs(processed_outputs)
+        ]
+
+        if save_values:
+            self._post_processed_data = {
+                case: out for case, out in zip(cases, aggregated_outputs)
+            }
+
+        return aggregated_outputs
+
     def batch_process(self, cases: list[Case], save_values: bool = True) -> list[float]:
-        # Step 1: Evaluate all objectives for all cases
-        all_outputs = self._evaluate_batch(cases)
+        all_outputs = self.batch_evaluate(cases, save_values=save_values)
+        successful = [
+            (case, output)
+            for case, output in zip(cases, all_outputs)
+            if case.success is not False and output is not None
+        ]
 
-        # Step 2: Apply batch-level post-processing
-        processed_outputs = self.apply_batch_post_processing(all_outputs)
+        if not successful:
+            return []
 
-        # Step 3: Aggregate post-processed outputs into scalar values
-        outputs = self.aggregate_outputs(processed_outputs)
-
-        for case, out in zip(cases, outputs):
-            self._post_processed_data[case] = out
-
-        return outputs
+        successful_cases = [case for case, _ in successful]
+        successful_outputs = [output for _, output in successful]
+        return self.batch_post_process(
+            successful_cases, successful_outputs, save_values=save_values
+        )
 
     def data_for_case(self, case: Case, post_processed: bool = True):
         if post_processed:

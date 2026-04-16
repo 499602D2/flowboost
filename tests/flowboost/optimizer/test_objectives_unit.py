@@ -58,8 +58,8 @@ class TestObjectiveEvaluate:
         assert obj.data_for_case(case, post_processed=False) == 5.0
 
     def test_kwargs_passed_to_function(self, case):
-        def fn(c, kwargs):
-            return kwargs["multiplier"] * 2
+        def fn(c, *, multiplier):
+            return multiplier * 2
 
         obj = Objective(
             "test",

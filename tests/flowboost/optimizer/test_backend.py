@@ -7,7 +7,7 @@ from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
 from flowboost.optimizer.backend import OptimizationComplete
 from flowboost.optimizer.interfaces.Ax import AxBackend
-from flowboost.optimizer.objectives import Objective
+from flowboost.optimizer.objectives import AggregateObjective, Objective
 from flowboost.optimizer.search_space import Dimension
 
 
@@ -280,6 +280,60 @@ def test_tell_accepts_normalized_scalar_like_outputs(tmp_path):
     assert trial.status.is_completed
 
 
+def test_batch_process_and_tell_support_aggregate_objective(tmp_path):
+    first_case = _make_case(tmp_path, "aggregate-a", value=0.25)
+    second_case = _make_case(tmp_path, "aggregate-b", value=0.75)
+    for case in (first_case, second_case):
+        case.success = True
+
+    objective_a = Objective(
+        name="component_a",
+        minimize=True,
+        objective_function=lambda case: float(
+            case.read_metadata()["optimizer-suggestion"]["test_dim"]["value"]
+        ),
+    )
+    objective_b = Objective(
+        name="component_b",
+        minimize=True,
+        objective_function=lambda case: 2.0,
+    )
+    aggregate = AggregateObjective(
+        name="aggregate",
+        minimize=True,
+        objectives=[objective_a, objective_b],
+        threshold=0.0,
+        weights=[0.5, 0.5],
+    )
+
+    backend = AxBackend()
+    backend.set_search_space(
+        [
+            Dimension.range(
+                name="test_dim",
+                link=DictionaryLink("constant/chemistryProperties").entry(
+                    "tabulation/tolerance"
+                ),
+                lower=0.0,
+                upper=1.0,
+            )
+        ]
+    )
+    backend.set_objectives([aggregate])
+
+    outputs = backend.batch_process([first_case, second_case])
+    assert outputs == [[1.125, 1.375]]
+    assert aggregate.data_for_case(first_case) == pytest.approx(1.125)
+    assert aggregate.data_for_case(second_case) == pytest.approx(1.375)
+
+    backend.tell([first_case, second_case])
+
+    for case in (first_case, second_case):
+        trial_index = backend._trial_index_case_mapping[case]
+        trial = backend.client.experiment.trials[trial_index]
+        assert trial.status.is_completed
+
+
 def test_tell_reuses_existing_arm_for_duplicate_parameterizations(tmp_path):
     first_case = _make_case(tmp_path, "duplicate-a", value=0.5)
     second_case = _make_case(tmp_path, "duplicate-b", value=0.5)
@@ -356,6 +410,30 @@ def test_prepare_for_acquisition_offload_serializes_normalized_outputs(
 
     assert type(objective_value) is float
     assert objective_value == 0.0
+
+
+def test_prepare_for_acquisition_offload_rejects_duplicate_pending_case_names(
+    tmp_path,
+):
+    first_dir = tmp_path / "group_a" / "shared_case"
+    second_dir = tmp_path / "group_b" / "shared_case"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+
+    first_case = Case(first_dir)
+    second_case = Case(second_dir)
+    for case, value in ((first_case, 0.25), (second_case, 0.75)):
+        case.update_metadata(
+            {"test_dim": {"value": value}},
+            entry_header="optimizer-suggestion",
+        )
+
+    backend, _ = _make_normalized_backend(first_case)
+    backend.offload_acquisition = True
+    backend.initialize()
+
+    with pytest.raises(ValueError, match="unique across finished and pending cases"):
+        backend.prepare_for_acquisition_offload([], [first_case, second_case], tmp_path)
 
 
 def test_offloaded_acquisition_round_trip(tmp_path):
