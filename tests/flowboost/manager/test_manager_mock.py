@@ -115,3 +115,31 @@ def test_status_print(manager: Manager):
     assert job_running.id in status_output
     assert job_finished.id in status_output
     logging.info("Manager status print:\n" + status_output)
+
+
+def test_monitoring_waits_for_acquisition_without_case_jobs(
+    manager: Manager, monkeypatch
+):
+    manager.monitoring_interval = 0
+    acquisition_job = JobV2(
+        id="acq-1",
+        name="acquisition_job",
+        wdir=manager.wdir,
+    )
+    manager.acquisition_job = acquisition_job
+    manager._save_state()
+
+    statuses = iter([False, True])
+    monkeypatch.setattr(manager, "_job_has_finished", lambda _: next(statuses))
+    monkeypatch.setattr("flowboost.manager.manager.time.sleep", lambda _: None)
+
+    free_slots, finished, was_acquisition = manager.do_monitoring()
+
+    assert free_slots == 0
+    assert was_acquisition is True
+    assert finished == [acquisition_job]
+    assert manager.acquisition_job is None
+
+    with open(Path(manager.wdir, manager.persistence_fname), "r") as state_file:
+        state = json.load(state_file)
+    assert state["acquisition_job"] is None

@@ -35,8 +35,7 @@ class Local(Manager):
         cmd = [self.shell, script]
 
         if script_args:
-            script_kv = Manager._construct_scipt_args(script_args, " ")
-            cmd.extend(script_kv)
+            cmd.extend(Manager._construct_script_arg_list(script_args))
 
         # Execute the script and get the PID
         process = subprocess.Popen(cmd, cwd=submission_cwd, start_new_session=True)

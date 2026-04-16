@@ -520,11 +520,13 @@ class Session:
         self.target_objective = data.get("session", {}).get("target_objective")
 
         # [template]
-        self._template_case = Case.try_restoring(
-            str(data.get("template", {}).get("path"))
+        template_path = str(data.get("template", {}).get("path", "")).strip()
+        self._template_case = (
+            Case.try_restoring(template_path) if template_path else None
         )
         self._template_case_add_files = [
-            str(item) for item in data.get("template", {}).get("additional_files")
+            str(item)
+            for item in data.get("template", {}).get("additional_files", [])
         ]
 
         # [optimizer]

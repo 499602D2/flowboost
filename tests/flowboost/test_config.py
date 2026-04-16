@@ -62,11 +62,26 @@ class TestConfigSaveLoad:
 
 class TestConfigValidate:
     def test_valid_config(self):
-        assert config.validate({"scheduler": {"offload_acquisition": False}}) is True
+        assert config.validate({"optimizer": {"offload_acquisition": False}}) is True
 
     def test_empty_config_valid(self):
         assert config.validate({}) is True
 
     def test_offload_without_acquisition_config_invalid(self):
-        cfg = {"scheduler": {"offload_acquisition": True}}
+        cfg = {"optimizer": {"offload_acquisition": True}}
         assert config.validate(cfg) is False
+
+    def test_offload_with_nested_acquisition_config_is_valid(self):
+        cfg = {
+            "optimizer": {"offload_acquisition": True},
+            "scheduler": {"acquisition": {}},
+        }
+        assert config.validate(cfg) is True
+
+
+class TestConfigCreate:
+    def test_load_creates_default_config_from_template(self, tmp_path):
+        loaded = config.load(tmp_path)
+
+        assert (tmp_path / config.DEFAULT_CONFIG_NAME).exists()
+        assert loaded["optimizer"]["type"] == "Ax"

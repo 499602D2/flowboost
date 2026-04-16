@@ -6,6 +6,7 @@ from pathlib import Path
 import tomlkit
 
 DEFAULT_CONFIG_NAME: str = "flowboost_config.toml"
+TEMPLATE_CONFIG_NAME: str = "optifoam_config.toml"
 
 
 def validate(config: dict) -> bool:
@@ -18,11 +19,12 @@ def validate(config: dict) -> bool:
         bool: True if the configuration is valid, False otherwise.
     """
     # Check for offload_acquisition
-    offload_acquisition = config.get("scheduler", {}).get("offload_acquisition", False)
+    offload_acquisition = config.get("optimizer", {}).get("offload_acquisition", False)
 
     if offload_acquisition:
         # Ensure acquisition configuration is present and valid
-        if "scheduler.acquisition" not in config:
+        scheduler_config = config.get("scheduler", {})
+        if "acquisition" not in scheduler_config:
             logging.error(
                 "Offload acquisition is enabled, but `[scheduler.acquisition]` not configured"
             )
@@ -32,7 +34,7 @@ def validate(config: dict) -> bool:
 
 
 def create(dir: Path, filename: str = DEFAULT_CONFIG_NAME) -> dict:
-    with pkg_resources.path("flowboost.config", DEFAULT_CONFIG_NAME) as config_path:
+    with pkg_resources.path("flowboost.config", TEMPLATE_CONFIG_NAME) as config_path:
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration template not found [{config_path}]")
 

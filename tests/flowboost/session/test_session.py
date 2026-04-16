@@ -116,6 +116,24 @@ def test_session_restore_defaults_termination_to_none(tmp_path):
     assert restored.clone_method == "foamCloneCase"
 
 
+def test_session_restore_without_template_keeps_template_unset(tmp_path):
+    data_dir = tmp_path / "template_free_session"
+    created = Session(
+        name="Template-free session",
+        data_dir=data_dir,
+    )
+    created.persist()
+
+    restored = Session(
+        name="ignored",
+        data_dir=data_dir,
+    )
+
+    assert restored._template_case is None
+    with pytest.raises(ValueError, match="No template case configured"):
+        restored._verify_search_space_in_template()
+
+
 @pytest.mark.slow
 def test_simple_blank_start(foam_in_env, tmp_path, monkeypatch):
     # Add objective function
