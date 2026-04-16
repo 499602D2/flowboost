@@ -244,6 +244,10 @@ class Session:
                 Case(
                     case_dest, data_backend=self.dataframe_format
                 ).post_evaluation_update(job.to_dict())
+                if not self.job_manager.finalize_job(job):
+                    logging.warning(f"Failed to finalize tracked job state for {job}")
+
+            free_slots = self.job_manager.free_slots()
 
             # Check termination criteria after processing finished cases
             if self._check_termination_criteria():
@@ -262,9 +266,13 @@ class Session:
                 return
 
             for case in new_cases:
-                self.job_manager.submit_case(
+                submit_ok = self.job_manager.submit_case(
                     case, script_name=self.submission_script_name
                 )
+                if not submit_ok:
+                    raise RuntimeError(
+                        f"Job submission failed for generated case '{case.name}'"
+                    )
 
             # Write designs log and print all designs after submitting new cases
             if new_cases:

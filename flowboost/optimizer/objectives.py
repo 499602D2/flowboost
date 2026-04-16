@@ -168,6 +168,19 @@ class Objective:
             except Exception as e:
                 raise ValueError(f"Error applying post-processing step {step}: {e}")
 
+            try:
+                output_count = len(outputs)
+            except TypeError as e:
+                raise ValueError(
+                    f"Post-processing step {step} must return a sized collection: {e}"
+                )
+
+            if output_count != len(cases):
+                raise ValueError(
+                    f"Post-processing step {step} changed output cardinality: "
+                    f"expected {len(cases)}, got {output_count}"
+                )
+
         # Optionally, save post-processed outputs back to a dictionary keyed by Case
         # if specific per-case post-processed data is needed for further analysis
         out_dict: dict[Case, float] = {}
@@ -297,6 +310,9 @@ class AggregateObjective:
         self._objective_output_data: dict[Case, Any] = {}
         self._post_processed_data: dict[Case, float] = {}
 
+        if len(self.objectives) == 0:
+            raise ValueError("AggregateObjective requires at least one objective")
+
         if len(self.weights) != len(self.objectives):
             raise ValueError("Length of weights must match number of objectives")
 
@@ -347,11 +363,29 @@ class AggregateObjective:
     def apply_batch_post_processing(self, all_outputs: list[tuple]) -> list[tuple]:
         # Apply post-processing steps suitable for batch-level processing
         # Example: normalization across each element of the tuples
+        expected_count = len(all_outputs)
         for step, kwargs in self._post_processing_steps:
             try:
-                all_outputs = [step(output, **kwargs) for output in zip(*all_outputs)]
+                transformed_columns = []
+                for output in zip(*all_outputs):
+                    transformed = step(output, **kwargs)
+                    try:
+                        transformed_count = len(transformed)
+                    except TypeError as e:
+                        raise ValueError(
+                            f"Post-processing step {step} must return a sized collection: {e}"
+                        )
+
+                    if transformed_count != expected_count:
+                        raise ValueError(
+                            f"Post-processing step {step} changed output cardinality: "
+                            f"expected {expected_count}, got {transformed_count}"
+                        )
+
+                    transformed_columns.append(list(transformed))
+
                 # Transpose back if needed
-                all_outputs = list(zip(*all_outputs))
+                all_outputs = [tuple(row) for row in zip(*transformed_columns)]
             except Exception as e:
                 raise ValueError(
                     f"Error applying batch post-processing step {step}: {e}"

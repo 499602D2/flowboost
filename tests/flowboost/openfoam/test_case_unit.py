@@ -195,3 +195,20 @@ class TestCaseInit:
     def test_default_status(self, case):
         assert case.status == Status.NOT_SUBMITTED
         assert case.success is None
+
+
+class TestCaseTimeDirectories:
+    def test_list_time_directories_returns_empty_for_blank_output(
+        self, case, monkeypatch
+    ):
+        monkeypatch.setattr("flowboost.openfoam.case.run_command", lambda cmd, cwd: "")
+
+        assert case.list_time_directories() == []
+
+    def test_list_time_directories_includes_zero_without_blank_entry(
+        self, case, monkeypatch
+    ):
+        (case.path / "0").mkdir()
+        monkeypatch.setattr("flowboost.openfoam.case.run_command", lambda cmd, cwd: "")
+
+        assert case.list_time_directories(omit_dirs=[]) == ["0"]

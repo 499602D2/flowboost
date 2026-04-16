@@ -103,6 +103,7 @@ class Dimension:
         dim = cls(name, "choice")
         dim.linked_entry = link
         dim.is_ordered = is_ordered
+        cls._validate_choice_values(choices)
 
         # If dtype is provided, ensure all choices match this type, otherwise infer it
         if dtype is None:
@@ -113,6 +114,17 @@ class Dimension:
         dim.value_type = Dimension._get_value_type_str(dtype)
 
         return dim
+
+    @staticmethod
+    def _validate_choice_values(values: list[Any]) -> None:
+        has_bool = any(type(value) is bool for value in values)
+        has_numeric_non_bool = any(
+            isinstance(value, (int, float)) and type(value) is not bool
+            for value in values
+        )
+
+        if has_bool and has_numeric_non_bool:
+            raise ValueError("Cannot mix bool and numeric choice values")
 
     @staticmethod
     def _infer_type(values: list[Any]) -> Type:

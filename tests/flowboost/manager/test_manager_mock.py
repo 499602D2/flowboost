@@ -148,3 +148,37 @@ def test_monitoring_waits_for_acquisition_without_case_jobs(
     with open(Path(manager.wdir, manager.persistence_fname), "r") as state_file:
         state = json.load(state_file)
     assert state["acquisition_job"] is None
+
+
+def test_monitoring_keeps_finished_jobs_tracked_until_finalized(manager: Manager):
+    finished_job = JobV2(
+        id="125",
+        name="finished_job",
+        wdir=Path("/tmp"),
+    )
+    manager.job_pool.add(finished_job)
+    manager.monitoring_interval = 0
+
+    free_slots, finished, was_acquisition = manager.do_monitoring()
+
+    assert was_acquisition is False
+    assert finished == [finished_job]
+    assert free_slots == manager.job_limit
+    assert finished_job in manager.job_pool
+
+
+def test_finalize_job_removes_finished_job_and_persists(manager: Manager):
+    finished_job = JobV2(
+        id="125",
+        name="finished_job",
+        wdir=Path("/tmp"),
+    )
+    manager.job_pool.add(finished_job)
+    manager._save_state()
+
+    assert manager.finalize_job(finished_job) is True
+    assert finished_job not in manager.job_pool
+
+    with open(Path(manager.wdir, manager.persistence_fname), "r") as state_file:
+        state = json.load(state_file)
+    assert state["job_pool"] == []

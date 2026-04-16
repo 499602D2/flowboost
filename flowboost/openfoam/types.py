@@ -71,6 +71,9 @@ class FOAMType:
 
     @staticmethod
     def to_FOAM(data: Any) -> str:
+        if isinstance(data, np.generic):
+            data = data.item()
+
         # Helper function to handle vectors and tensors
         def format_vector_or_tensor(d, shape):
             if shape == (3,):  # Vector
@@ -211,14 +214,8 @@ class FOAMType:
                 key, value = key.strip(), value.strip()
 
                 # Attempt to parse value as vector if it looks like one
-                if value.startswith("(") and value.endswith(")"):
-                    parsed_dict[key] = FOAMType.parse_vector_space(value, False)
-                else:
-                    # Try to convert numerical values, fall back to string
-                    if value.isdigit():
-                        parsed_dict[key] = float(value)
-                    else:
-                        parsed_dict[key] = value
+                _, _, parsed_value = FOAMType.parse(value)
+                parsed_dict[key] = parsed_value
 
         return parsed_dict
 

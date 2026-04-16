@@ -150,48 +150,6 @@ class DictionaryReader(Dictionary):
 
     def add(self, entry_path: str, value: Any) -> Optional["Entry"]:
         """Adds a new entry to the dictionary at the specified path with the given value."""
-        # Split the entry path to find or create the necessary Entry objects
-        path_parts = entry_path.split("/")
-        current_parent = None
-        current_path = []
-
-        for part in path_parts[:-1]:  # Exclude the last part for now
-            current_path.append(part)
-            found_entry = self.entry("/".join(current_path))
-            if found_entry is None:  # If the entry does not exist, create a placeholder
-                found_entry = Entry(self, key=part, parent=current_parent)
-
-                if current_parent is None:
-                    if self._keywords is None:
-                        self._keywords = []
-
-                    self._keywords.append(found_entry)
-                else:
-                    if current_parent.keywords is None:
-                        current_parent.keywords = []
-
-                    current_parent.keywords.append(found_entry)
-                current_parent = found_entry
-            current_parent = found_entry
-
-        # Now handle the actual entry to add
-        new_entry_key = path_parts[-1]
-        new_entry = Entry(self, key=new_entry_key, parent=current_parent)
-
-        if current_parent:
-            print(f"Adding key={new_entry_key}, parent={current_parent.print_path()}")
-        else:
-            print(f"Adding key={new_entry_key}, parent=None")
-
-        if current_parent and current_parent.keywords:
-            current_parent.keywords.append(new_entry)
-        else:
-            if self._keywords is None:
-                self._keywords = []
-
-            self._keywords.append(new_entry)
-
-        # Execute the CLI command to add the entry with the specified value
         foam_value = FOAMType.to_FOAM(value)
         cmd = ["foamDictionary", self.path, "-entry", entry_path, "-add", foam_value]
         result = run_foam_command(cmd)
@@ -199,10 +157,19 @@ class DictionaryReader(Dictionary):
             logging.error(f"Error adding new entry '{entry_path}': {result.stderr}")
             return None
 
+        # Re-discover from disk instead of trying to update a potentially stale
+        # in-memory tree by hand.
+        self._keywords = None
+        new_entry = self.entry(entry_path)
+
+        if new_entry is None:
+            logging.error(
+                f"Entry '{entry_path}' was added but could not be re-discovered"
+            )
+            return None
+
         new_entry._value = value
         new_entry._raw_value = foam_value
-        print(new_entry)
-
         return new_entry
 
     def delete(self, entry_path: str) -> bool:
@@ -467,15 +434,17 @@ class Entry:
         Returns:
             bool: True on success, False on failure.
         """
-        if self.terminating is False and not override:
-            # For non-terminating entries without override, enforce dictionary type for new_value
-            if not isinstance(new_value, dict):
-                logging.error(
-                    f"Non-terminating entry '{self.print_path()}' requires a dictionary value or override flag."
-                )
-                return False
+        if isinstance(new_value, dict):
+            raise NotImplementedError(
+                "Dictionary-valued entry writes are not implemented. "
+                "Set sub-entries individually instead."
+            )
 
-            # Additional logic for setting dictionary values: TODO
+        if self.terminating is False and not override:
+            logging.error(
+                f"Non-terminating entry '{self.print_path()}' requires override=True."
+            )
+            return False
 
         if write_dimensioned and not isinstance(new_value, str):
             raise ValueError(

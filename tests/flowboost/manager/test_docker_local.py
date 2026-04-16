@@ -98,10 +98,19 @@ class TestJobHasFinished:
         assert rm_call[0][0][:2] == ["docker", "rm"]
 
     def test_missing_container_is_finished(self, manager):
-        mock_result = MagicMock(returncode=1)
+        mock_result = MagicMock(returncode=1, stderr="Error: No such object: gone123\n")
 
         with patch("subprocess.run", return_value=mock_result):
             assert manager._job_has_finished("gone123")
+
+    def test_non_not_found_inspect_error_returns_not_finished(self, manager):
+        mock_result = MagicMock(
+            returncode=1,
+            stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock\n",
+        )
+
+        with patch("subprocess.run", return_value=mock_result):
+            assert not manager._job_has_finished("abc123")
 
     def test_timeout_returns_not_finished(self, manager):
         with patch(

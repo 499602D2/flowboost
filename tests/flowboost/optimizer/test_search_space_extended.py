@@ -43,6 +43,11 @@ class TestDimensionChoice:
         with pytest.raises(ValueError, match="Cannot convert"):
             Dimension.choice("x", _dummy_link(), ["true", "maybe"], dtype=bool)
 
+    @pytest.mark.parametrize("choices", [[True, 1], [1, True]])
+    def test_mixed_bool_and_numeric_choices_raise(self, choices):
+        with pytest.raises(ValueError, match="Cannot mix bool and numeric"):
+            Dimension.choice("x", _dummy_link(), choices)
+
 
 class TestDimensionFixed:
     def test_fixed_int(self):

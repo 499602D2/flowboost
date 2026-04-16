@@ -131,10 +131,21 @@ class TestAggregateObjective:
         obj2 = Objective("b", minimize=True, objective_function=lambda c: 3.0)
         return [obj1, obj2]
 
+    def test_empty_objectives_raises(self):
+        with pytest.raises(ValueError, match="at least one objective"):
+            AggregateObjective(
+                "agg",
+                minimize=True,
+                objectives=[],
+                threshold=0.0,
+            )
+
     def test_mismatched_weights_raises(self):
         objs = self._make_objectives()
         with pytest.raises(ValueError, match="weights must match"):
-            AggregateObjective("agg", minimize=True, objectives=objs, threshold=0.0, weights=[1.0])
+            AggregateObjective(
+                "agg", minimize=True, objectives=objs, threshold=0.0, weights=[1.0]
+            )
 
     def test_default_weights(self):
         objs = self._make_objectives()
@@ -207,6 +218,7 @@ class TestScikitNormalizationStep:
 
     def test_accepts_valid_normalizer(self):
         from sklearn.preprocessing import MinMaxScaler
+
         step = ScikitNormalizationStep(MinMaxScaler())
         result = step.evaluate([1.0, 2.0, 3.0])
         assert result[0] == pytest.approx(0.0)
@@ -234,11 +246,44 @@ class TestExecutePostProcessingSteps:
 
         obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
         with pytest.raises(ValueError, match="Case count"):
-            obj.execute_post_processing_steps(
-                cases=[case], outputs=[1.0, 2.0]
-            )
+            obj.execute_post_processing_steps(cases=[case], outputs=[1.0, 2.0])
 
     def test_empty_returns_empty(self):
         obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
         result = obj.execute_post_processing_steps(cases=[], outputs=[])
         assert result == {}
+
+    def test_step_that_changes_cardinality_raises(self, tmp_path):
+        cases = []
+        for i in range(2):
+            d = tmp_path / f"case_{i}"
+            d.mkdir()
+            cases.append(Case(d))
+
+        obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
+        obj.attach_post_processing_step(lambda outputs: list(outputs)[:1])
+
+        with pytest.raises(ValueError, match="changed output cardinality"):
+            obj.execute_post_processing_steps(cases=cases, outputs=[1.0, 2.0])
+
+
+class TestAggregateBatchPostProcessing:
+    def test_step_that_changes_column_cardinality_raises(self, tmp_path):
+        cases = []
+        for i in range(2):
+            d = tmp_path / f"case_{i}"
+            d.mkdir()
+            cases.append(Case(d))
+
+        obj1 = Objective("a", minimize=True, objective_function=lambda c: 2.0)
+        obj2 = Objective("b", minimize=True, objective_function=lambda c: 3.0)
+        agg = AggregateObjective(
+            "agg",
+            minimize=True,
+            objectives=[obj1, obj2],
+            threshold=0.0,
+        )
+        agg.attach_post_processing_step(lambda outputs: list(outputs)[:1])
+
+        with pytest.raises(ValueError, match="changed output cardinality"):
+            agg.batch_post_process(cases=cases, outputs=[(2.0, 3.0), (4.0, 5.0)])

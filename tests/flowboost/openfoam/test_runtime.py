@@ -1,10 +1,12 @@
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
+from flowboost.openfoam.interface import FOAM
 from flowboost.openfoam.runtime import FOAMRuntime, get_runtime, reset_runtime
 
 
@@ -152,7 +154,10 @@ class TestTranslateCommand:
         translated_cmd, _ = native_runtime._translate_command(cmd, None)
 
         assert translated_cmd == [
-            "foamDictionary", "/work/mycase/constant/U", "-entry", "inlet"
+            "foamDictionary",
+            "/work/mycase/constant/U",
+            "-entry",
+            "inlet",
         ]
 
     def test_cwd_translated(self, native_runtime):
@@ -189,9 +194,55 @@ class TestRunRouting:
         with patch.object(docker_runtime, "_docker_exec") as mock_exec:
             mock_exec.return_value = subprocess.CompletedProcess([], 0, "", "")
             docker_runtime.run(["foamDictionary", "constant/U"])
-            mock_exec.assert_called_once_with(
-                ["foamDictionary", "constant/U"], None
-            )
+            mock_exec.assert_called_once_with(["foamDictionary", "constant/U"], None)
+
+
+class TestSource:
+    def test_failed_source_raises(self):
+        with (
+            patch(
+                "flowboost.openfoam.interface.get_runtime",
+                return_value=SimpleNamespace(mode=FOAMRuntime.Mode.NATIVE),
+            ),
+            patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout="",
+                    stderr="missing setup script",
+                ),
+            ),
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            with pytest.raises(RuntimeError, match="missing setup script"):
+                FOAM.source("/tmp/missing setup.sh")
+
+    def test_source_quotes_spaced_paths_and_updates_environment(self):
+        with (
+            patch(
+                "flowboost.openfoam.interface.get_runtime",
+                return_value=SimpleNamespace(mode=FOAMRuntime.Mode.NATIVE),
+            ),
+            patch(
+                "subprocess.run",
+                return_value=subprocess.CompletedProcess(
+                    args=[],
+                    returncode=0,
+                    stdout="FOAM_INST_DIR=/opt/openfoam\nCUSTOM_FLAG=enabled\n",
+                    stderr="",
+                ),
+            ) as mock_run,
+            patch.dict(os.environ, {}, clear=True),
+        ):
+            FOAM.source("/tmp/path with spaces/OpenFOAM bashrc")
+            assert mock_run.call_args[0][0] == [
+                "/bin/bash",
+                "-lc",
+                "source '/tmp/path with spaces/OpenFOAM bashrc' && env",
+            ]
+            assert os.environ["FOAM_INST_DIR"] == "/opt/openfoam"
+            assert os.environ["CUSTOM_FLAG"] == "enabled"
 
 
 # ---------------------------------------------------------------------------
@@ -304,9 +355,7 @@ class TestAutoMount:
     def test_raises_when_common_ancestor_too_broad(self, docker_runtime):
         with patch.object(docker_runtime, "_is_mounted", return_value=False):
             with pytest.raises(RuntimeError, match="too broad"):
-                docker_runtime._auto_mount(
-                    ["foamDictionary", "/tmp/x", "/var/y"], None
-                )
+                docker_runtime._auto_mount(["foamDictionary", "/tmp/x", "/var/y"], None)
 
     def test_guest_path_increments(self, docker_runtime, tmp_path):
         docker_runtime._mounts = [(Path("/existing"), "/work")]

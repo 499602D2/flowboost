@@ -112,6 +112,17 @@ class TestToFOAM:
     def test_float_zero(self):
         assert FOAMType.to_FOAM(0.0) == "0.0"
 
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (np.int64(42), "42"),
+            (np.float32(3.5), "3.5"),
+            (np.bool_(True), "true"),
+        ],
+    )
+    def test_numpy_scalar_types(self, value, expected):
+        assert FOAMType.to_FOAM(value) == expected
+
     def test_numpy_vector(self):
         result = FOAMType.to_FOAM(np.array([1.0, 2.0, 3.0]))
         assert result == "( 1.0 2.0 3.0 )"
@@ -181,6 +192,18 @@ class TestParseVectorSpace:
         assert result[0, 1] == result[1, 0] == 4
         assert result[0, 2] == result[2, 0] == 5
         assert result[1, 2] == result[2, 1] == 6
+
+
+class TestParseSubdict:
+    def test_parses_scalars_booleans_and_vectors(self):
+        result = FOAMType.parse_subdict(
+            "{ alpha 0.5; beta -1; flag true; vec (1 2 3); }"
+        )
+
+        assert result["alpha"] == 0.5
+        assert result["beta"] == -1
+        assert result["flag"] is True
+        np.testing.assert_array_equal(result["vec"], np.array([1, 2, 3]))
 
 
 class TestConstructSymmTensor:

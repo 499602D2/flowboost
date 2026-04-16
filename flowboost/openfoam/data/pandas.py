@@ -14,7 +14,7 @@ class PandasData(Data[pd.DataFrame]):
     """
 
     def _read_file(self, file: Path, comment: str, separator: str) -> pd.DataFrame:
-        cols = self._discover_file_header(file, comment=comment, delim=separator)
+        cols = self._discover_columns(file, comment=comment, delim=separator)
         return pd.read_csv(
             file,
             comment=comment,

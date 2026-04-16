@@ -97,7 +97,14 @@ class DockerLocal(Manager):
             return False
 
         if result.returncode != 0:
-            return True  # Container gone = finished
+            stderr = (result.stderr or "").strip().lower()
+            if "no such object" in stderr or "no such container" in stderr:
+                return True
+
+            logging.warning(
+                f"Docker inspect failed while checking job '{job_id}': {result.stderr}"
+            )
+            return False
 
         if result.stdout.strip() == "true":
             return False

@@ -100,7 +100,11 @@ class Data(ABC, Generic[FrameT]):
             time_dirs = self._time_dirs_for_function_object(function_dir)
 
             function_objects[function_dir.name] = {
-                time_dir.name: list(time_dir.glob("*.*")) for time_dir in time_dirs
+                time_dir.name: sorted(
+                    (path for path in time_dir.iterdir() if path.is_file()),
+                    key=lambda path: path.name,
+                )
+                for time_dir in time_dirs
             }
 
         return function_objects
@@ -265,6 +269,28 @@ class Data(ABC, Generic[FrameT]):
                     return None
                 prev_line = line
         return None
+
+    def _default_column_names(
+        self, file: Path, comment: str = "#", delim: str = "\t"
+    ) -> Optional[list[str]]:
+        with open(file, "r") as f:
+            for line in f:
+                if line.startswith(comment) or not line.strip():
+                    continue
+
+                columns = [col.strip() for col in line.rstrip("\n").split(delim)]
+                return [f"column_{i}" for i in range(1, len(columns) + 1)]
+
+        return None
+
+    def _discover_columns(
+        self, file: Path, comment: str = "#", delim: str = "\t"
+    ) -> Optional[list[str]]:
+        header = self._discover_file_header(file, comment=comment, delim=delim)
+        if header is not None:
+            return header
+
+        return self._default_column_names(file, comment=comment, delim=delim)
 
     def _discover_file_header_index(
         self, file: Path, comment: str = "#"

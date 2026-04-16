@@ -158,3 +158,41 @@ class TestLoadData:
         assert polars_df.columns == ["Time", "value", "clock"]
         assert list(pandas_df.columns) == ["Time", "value", "clock"]
         assert polars_df.to_dicts() == pandas_df.to_dict(orient="records")
+
+    def test_headerless_files_use_consistent_default_columns(self, tmp_path):
+        f = tmp_path / "data.dat"
+        f.write_text("0.1\t1.0\n0.2\t2.0\n")
+
+        polars_df = PolarsData(path=tmp_path).load_data(f)
+        pandas_df = PandasData(path=tmp_path).load_data(f)
+
+        assert polars_df.columns == ["column_1", "column_2"]
+        assert list(pandas_df.columns) == ["column_1", "column_2"]
+        assert polars_df.to_dicts() == pandas_df.to_dict(orient="records")
+
+
+class TestFunctionObjectDiscovery:
+    def test_discovers_extensionless_output_files(self, tmp_path):
+        fo_file = tmp_path / "postProcessing" / "probe" / "0" / "field"
+        fo_file.parent.mkdir(parents=True)
+        fo_file.write_text("0.1\t1.0\n0.2\t2.0\n")
+
+        data = PolarsData(path=tmp_path)
+        discovered = data.discover_function_objects()
+
+        assert discovered["probe"]["0"] == [fo_file]
+
+    def test_simple_reader_loads_single_extensionless_output(self, tmp_path):
+        fo_file = tmp_path / "postProcessing" / "probe" / "0" / "field"
+        fo_file.parent.mkdir(parents=True)
+        fo_file.write_text("0.1\t1.0\n0.2\t2.0\n")
+
+        data = PolarsData(path=tmp_path)
+        df = data.simple_function_object_reader("probe")
+
+        assert df is not None
+        assert df.columns == ["column_1", "column_2"]
+        assert df.to_dicts() == [
+            {"column_1": 0.1, "column_2": 1.0},
+            {"column_1": 0.2, "column_2": 2.0},
+        ]

@@ -5,7 +5,7 @@ import pytest
 from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
 from flowboost.optimizer.interfaces.Ax import AxBackend
-from flowboost.optimizer.objectives import Objective
+from flowboost.optimizer.objectives import AggregateObjective, Objective
 from flowboost.optimizer.search_space import Dimension
 
 
@@ -131,9 +131,7 @@ class TestPostProcessSuggestionParametrizations:
         backend.set_search_space([_make_dim("known")])
 
         with pytest.raises(ValueError, match="not found"):
-            backend._post_process_suggestion_parametrizations(
-                {0: {"unknown_dim": 1.0}}
-            )
+            backend._post_process_suggestion_parametrizations({0: {"unknown_dim": 1.0}})
 
     def test_empty_parametrizations(self):
         backend = AxBackend()
@@ -164,9 +162,7 @@ class TestBatchProcessAllFailed:
     def test_all_cases_failed_returns_empty(self, tmp_path):
         backend = AxBackend()
         backend.set_search_space([_make_dim()])
-        obj = Objective(
-            "test", minimize=True, objective_function=lambda c: None
-        )
+        obj = Objective("test", minimize=True, objective_function=lambda c: None)
         backend.set_objectives([obj])
 
         cases = []
@@ -179,3 +175,51 @@ class TestBatchProcessAllFailed:
         assert result == []
         # All should be marked failed
         assert all(c.success is False for c in cases)
+
+
+class TestBatchProcessSuccessStateSemantics:
+    def test_success_none_case_is_processed_and_persisted(self, tmp_path):
+        backend = AxBackend()
+        backend.set_search_space([_make_dim()])
+        backend.set_objectives([_make_objective("score")])
+
+        case_dir = tmp_path / "case"
+        case_dir.mkdir()
+        case = Case(case_dir)
+
+        result = backend.batch_process([case])
+
+        assert result == [[1.0]]
+        metadata = case.read_metadata()
+        assert metadata is not None
+        assert metadata["objective-outputs"]["score"]["value"] == 1.0
+        assert metadata["objective-values-raw"]["score"] == 1.0
+
+    def test_success_none_case_is_processed_for_aggregate_objective(self, tmp_path):
+        backend = AxBackend()
+        backend.set_search_space([_make_dim()])
+        backend.set_objectives(
+            [
+                AggregateObjective(
+                    "agg",
+                    minimize=True,
+                    objectives=[
+                        Objective("a", minimize=True, objective_function=lambda c: 2.0),
+                        Objective("b", minimize=True, objective_function=lambda c: 3.0),
+                    ],
+                    threshold=0.0,
+                )
+            ]
+        )
+
+        case_dir = tmp_path / "case"
+        case_dir.mkdir()
+        case = Case(case_dir)
+
+        result = backend.batch_process([case])
+
+        assert result == [[5.0]]
+        metadata = case.read_metadata()
+        assert metadata is not None
+        assert metadata["objective-outputs"]["agg"]["value"] == 5.0
+        assert metadata["objective-values-raw"]["agg"] == 5.0

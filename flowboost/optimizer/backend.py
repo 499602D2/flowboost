@@ -226,7 +226,9 @@ class Backend(ABC):
 
         # Step 2: Ensure that no cases were marked as failed: if they did, remove them
         # Remove None values from all_objective_outputs
-        successful_cases_indices = [i for i, case in enumerate(cases) if case.success]
+        successful_cases_indices = [
+            i for i, case in enumerate(cases) if case.success is not False
+        ]
         all_objective_outputs = [
             [
                 output

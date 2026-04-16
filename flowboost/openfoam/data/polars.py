@@ -21,7 +21,7 @@ class PolarsData(Data[pl.DataFrame]):
         self.streaming: bool = streaming
 
     def _read_file(self, file: Path, comment: str, separator: str) -> pl.DataFrame:
-        cols = self._discover_file_header(file, comment=comment, delim=separator)
+        cols = self._discover_columns(file, comment=comment, delim=separator)
         kwargs: dict = dict(
             comment_prefix=comment,
             has_header=False,

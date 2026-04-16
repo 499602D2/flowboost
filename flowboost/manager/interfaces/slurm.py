@@ -6,16 +6,20 @@ from typing import Any, Optional
 
 from flowboost.manager.manager import Manager
 
+
 class Slurm(Manager):
     def __init__(self, wdir: Path | str, job_limit: int) -> None:
         super().__init__(wdir, job_limit)
 
     @staticmethod
     def _is_available() -> bool:
-        if shutil.which("sbatch") and shutil.which("squeue"):
+        required_commands = ("sbatch", "squeue", "scancel", "scontrol")
+        if all(shutil.which(command) for command in required_commands):
             return True
 
-        logging.error("sbatch or squeue commands not found in PATH")
+        logging.error(
+            "Required Slurm commands not found in PATH: %s", required_commands
+        )
         return False
 
     def _submit_job(
@@ -31,7 +35,7 @@ class Slurm(Manager):
         if script_args:
             # If Allrun accepts args, pass them
             script_kv = Manager._construct_scipt_args(script_args)
-            cmd.extend(["-v", script_kv])
+            cmd.extend(["--export", f"ALL,{script_kv}"])
 
         cmd.append(str(script))
         # Run in case working directory
@@ -43,7 +47,6 @@ class Slurm(Manager):
 
         job_id = result.stdout.split()[-1]
         return job_id
-
 
     def _cancel_job(self, job_id: str) -> bool:
         cmd = ["scancel", job_id]

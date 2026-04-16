@@ -252,6 +252,16 @@ class Manager(ABC):
         logging.info(f"Cancelled job: {job}")
         return success
 
+    def finalize_job(self, job: "JobV2") -> bool:
+        if job not in self.job_pool:
+            logging.error(f"Cannot finalize job: not in job pool ({job})")
+            return False
+
+        self.job_pool.remove(job)
+        self._save_state()
+        logging.info(f"Finalized job: {job}")
+        return True
+
     def do_monitoring(self) -> tuple[int, list["JobV2"], bool]:
         """
         Performs persistent monitoring of the running optimization jobs,
@@ -281,16 +291,14 @@ class Manager(ABC):
             if len(self.job_pool) == 0:
                 return (self.job_limit, [], False)
 
-            finished_jobs = {
-                job for job in self.job_pool if self._job_has_finished(job.id)
-            }
+            finished_jobs = sorted(
+                (job for job in self.job_pool if self._job_has_finished(job.id)),
+                key=lambda job: job.created_at,
+            )
 
             if finished_jobs:
-                self.job_pool.difference_update(finished_jobs)
-                self._save_state()
-
-                free_slots = self.job_limit - len(self.job_pool)
-                return (free_slots, list(finished_jobs), False)
+                free_slots = self.free_slots()
+                return (free_slots, finished_jobs, False)
 
             print(self._status_print())
             logging.info("No jobs finished, monitoring...")

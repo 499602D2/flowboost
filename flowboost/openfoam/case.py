@@ -328,7 +328,7 @@ class Case:
             list[str]: List of strings of time directory names (e.g. ["5"]).
         """
         out = run_command(["listTimes"], cwd=self.path)
-        times = out.strip().split("\n")
+        times = out.strip().splitlines() if out.strip() else []
 
         # FoamListTimes is wonky in the sense that it omits 0 by default, but
         # our case may have a non-0 first time dir.

@@ -46,7 +46,7 @@ class Local(Manager):
 
     def _cancel_job(self, job_id: str) -> bool:
         try:
-            os.kill(int(job_id), signal.SIGTERM)
+            os.killpg(int(job_id), signal.SIGTERM)
         except OSError:
             return False
 
@@ -54,12 +54,40 @@ class Local(Manager):
 
     def _job_has_finished(self, job_id: str) -> bool:
         try:
-            # Check if the process is still running
             process = psutil.Process(int(job_id))
-            # If the process is running or sleeping, it's not finished
-            if process.status() in [psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING]:
+            if not process.is_running():
+                return True
+
+            live_statuses = {
+                getattr(psutil, status_name)
+                for status_name in (
+                    "STATUS_RUNNING",
+                    "STATUS_SLEEPING",
+                    "STATUS_DISK_SLEEP",
+                    "STATUS_STOPPED",
+                    "STATUS_TRACING_STOP",
+                    "STATUS_WAKING",
+                    "STATUS_IDLE",
+                    "STATUS_LOCKED",
+                    "STATUS_WAITING",
+                    "STATUS_PARKED",
+                )
+                if hasattr(psutil, status_name)
+            }
+            if process.status() in live_statuses:
                 return False
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+
+            finished_statuses = {psutil.STATUS_ZOMBIE}
+            dead_status = getattr(psutil, "STATUS_DEAD", None)
+            if dead_status is not None:
+                finished_statuses.add(dead_status)
+
+            return process.status() in finished_statuses
+        except psutil.NoSuchProcess:
+            return True
+        except psutil.AccessDenied:
+            return False
+        except psutil.ZombieProcess:
             return True
 
-        return True
+        return False
