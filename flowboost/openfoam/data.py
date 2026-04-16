@@ -319,7 +319,9 @@ class Data:
             )
 
         def read_polars(file) -> pl.DataFrame:
-            cols = self._discover_file_header(file, comment=comment)
+            cols = self._discover_file_header(
+                file, comment=comment, delim=separator
+            )
             return pl.scan_csv(
                 file,
                 comment_prefix=comment,  # OF standard comment prefix

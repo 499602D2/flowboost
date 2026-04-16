@@ -38,6 +38,10 @@ class TestDimensionChoice:
         assert dim.value_type == "float"
         assert all(isinstance(v, float) for v in dim.values)
 
+    def test_explicit_bool_dtype_rejects_invalid_tokens(self):
+        with pytest.raises(ValueError, match="Cannot convert"):
+            Dimension.choice("x", _dummy_link(), ["true", "maybe"], dtype=bool)
+
 
 class TestDimensionFixed:
     def test_fixed_int(self):

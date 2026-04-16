@@ -145,3 +145,18 @@ class TestLoadData:
         data = Data(path=tmp_path)
         df = data.load_data([f1, f2])
         assert len(df) == 2
+
+    def test_custom_separator_produces_same_schema_for_pandas_and_polars(self, tmp_path):
+        f = tmp_path / "comma.dat"
+        f.write_text("# Time,value,clock\n0.1,1.0,2.0\n0.2,3.0,4.0\n")
+
+        polars_df = Data(path=tmp_path, dataframe_format="polars").load_data(
+            f, separator=","
+        )
+        pandas_df = Data(path=tmp_path, dataframe_format="pandas").load_data(
+            f, separator=","
+        )
+
+        assert polars_df.columns == ["Time", "value", "clock"]
+        assert list(pandas_df.columns) == ["Time", "value", "clock"]
+        assert polars_df.to_dicts() == pandas_df.to_dict(orient="records")

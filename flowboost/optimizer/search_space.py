@@ -145,8 +145,12 @@ class Dimension:
 
         try:
             if target_type is bool and isinstance(value, str):
-                # Convert strings to bool explicitly (assuming 'True', 'False' strings)
-                return value.lower() in ["true", "1", "t", "y", "yes"]
+                normalized = value.strip().lower()
+                if normalized in Dimension._TRUE_STRINGS:
+                    return True
+                if normalized in Dimension._FALSE_STRINGS:
+                    return False
+                raise ValueError(f"Cannot convert {value!r} to bool.")
             else:
                 return target_type(value)
         except ValueError:
@@ -157,6 +161,8 @@ class Dimension:
     # Used by _get_value_type_str (type→str) and coerce (str→type).
     _TYPE_MAP: dict[type, str] = {int: "int", float: "float", bool: "bool", str: "str"}
     _TYPE_MAP_INV: dict[str, type] = {v: k for k, v in _TYPE_MAP.items()}
+    _TRUE_STRINGS: set[str] = {"true", "1", "t", "y", "yes"}
+    _FALSE_STRINGS: set[str] = {"false", "0", "f", "n", "no"}
 
     @staticmethod
     def _get_value_type_str(value_type: Type) -> str:

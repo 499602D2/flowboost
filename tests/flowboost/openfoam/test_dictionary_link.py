@@ -1,6 +1,8 @@
 """Tests for DictionaryLink chaining and immutability — no OpenFOAM CLI needed."""
 
-from flowboost.openfoam.dictionary import Dictionary, DictionaryLink
+import numpy as np
+
+from flowboost.openfoam.dictionary import Dictionary, DictionaryLink, Entry
 
 
 class TestDictionaryLinkChaining:
@@ -43,6 +45,19 @@ class TestDictionaryLinkIndex:
     def test_index_preserves_path(self):
         link = Dictionary.link("0/U").entry("internalField").index(0)
         assert link.path == "0/U"
+
+    def test_reader_resolves_indexed_entry_to_scalar(self, monkeypatch, tmp_path):
+        entry = Entry(Dictionary.reader(tmp_path / "dummyDict"), key="internalField")
+        entry._value = np.array([10, 20, 30])
+
+        monkeypatch.setattr(
+            "flowboost.openfoam.dictionary.DictionaryReader.entry",
+            lambda self, entry_path: entry if entry_path == "internalField" else None,
+        )
+
+        value = Dictionary.link("0/U").entry("internalField").index(1).reader(tmp_path)
+
+        assert value == 20
 
 
 class TestDictionaryLinkStr:

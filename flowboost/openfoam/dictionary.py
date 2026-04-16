@@ -2,6 +2,7 @@ import json
 import logging
 from functools import total_ordering
 from pathlib import Path
+import re
 from typing import Any, Optional, Union
 
 from flowboost.openfoam.interface import run_foam_command
@@ -296,7 +297,7 @@ class DictionaryLink:
 
     def reader(
         self, case_path: str | Path
-    ) -> Optional[Union[DictionaryReader, "Entry"]]:
+    ) -> Optional[Union[DictionaryReader, "Entry", Any]]:
         """
         Convert this link into a DictionaryReader that resolves the linked entry path
         within the context of a given case directory.
@@ -305,10 +306,23 @@ class DictionaryLink:
         reader = DictionaryReader(full_path)
 
         if self.entry_path:
-            # If there's an entry path, resolve it to an Entry object
-            return reader.entry(self.entry_path)
+            resolved_entry_path, index = self._split_index_suffix(self.entry_path)
+            entry = reader.entry(resolved_entry_path)
+            if entry is None:
+                return None
+            if index is not None:
+                return entry.index(index)
+            return entry
 
         return reader
+
+    @staticmethod
+    def _split_index_suffix(entry_path: str) -> tuple[str, Optional[int]]:
+        match = re.fullmatch(r"(.+)\[(\d+)\]", entry_path)
+        if not match:
+            return entry_path, None
+
+        return match.group(1), int(match.group(2))
 
     def __str__(self):
         """
@@ -455,7 +469,7 @@ class Entry:
         if write_dimensioned and isinstance(new_value, str):
             # New value is an entire dimensioned entry: infer name, value, dimension
             new_raw_val = new_value
-            self._name, new_value, self._dimension = FOAMType.parse(new_raw_val)
+            parsed_name, parsed_dimension, parsed_value = FOAMType.parse(new_raw_val)
         else:
             # Only a value is being written
             foam_value = FOAMType.to_FOAM(new_value)
@@ -494,7 +508,12 @@ class Entry:
 
         # Assuming success, update the local cached value
         self._raw_value = new_raw_val  # Store the new raw value as string
-        self._value = new_value  # Keep Pythonic value
+        if write_dimensioned and isinstance(new_value, str):
+            self._name = parsed_name
+            self._dimension = parsed_dimension
+            self._value = parsed_value
+        else:
+            self._value = new_value  # Keep Pythonic value
 
         return True
 
