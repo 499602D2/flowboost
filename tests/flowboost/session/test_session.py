@@ -74,6 +74,48 @@ def test_incorrect_startup():
     pass
 
 
+def test_session_restore_preserves_termination_criteria(tmp_path):
+    data_dir = tmp_path / "termination_session"
+    created = Session(
+        name="Termination test",
+        data_dir=data_dir,
+        max_evaluations=50,
+        target_value=0.01,
+        target_objective="my_obj",
+        clone_method="copy",
+    )
+    created.persist()
+
+    restored = Session(
+        name="ignored",
+        data_dir=data_dir,
+    )
+
+    assert restored.max_evaluations == 50
+    assert restored.target_value == 0.01
+    assert restored.target_objective == "my_obj"
+    assert restored.clone_method == "copy"
+
+
+def test_session_restore_defaults_termination_to_none(tmp_path):
+    data_dir = tmp_path / "no_termination_session"
+    created = Session(
+        name="No termination",
+        data_dir=data_dir,
+    )
+    created.persist()
+
+    restored = Session(
+        name="ignored",
+        data_dir=data_dir,
+    )
+
+    assert restored.max_evaluations is None
+    assert restored.target_value is None
+    assert restored.target_objective is None
+    assert restored.clone_method == "foamCloneCase"
+
+
 @pytest.mark.slow
 def test_simple_blank_start(foam_in_env, tmp_path, monkeypatch):
     # Add objective function

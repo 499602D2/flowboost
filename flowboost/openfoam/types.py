@@ -46,7 +46,7 @@ class FOAMType:
         # Attempt to directly return the parsed scalar types
         scalar_value = FOAMType.try_parse_scalar(value)
 
-        if scalar_value:
+        if scalar_value is not None:
             return name, dimension, scalar_value
 
         # Handle non-scalar types with a separate method

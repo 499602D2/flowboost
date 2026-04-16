@@ -509,7 +509,7 @@ class Entry:
         """
         return self.set(new_value=new_value, override=override)
 
-    def add(self, entry_path: str, value: Any) -> bool:
+    def add(self, entry_path: str, value: Any) -> Optional["Entry"]:
         """Adds a new sub-entry relative to this entry with the given value."""
         rel_path = self.print_path()
 
@@ -518,8 +518,7 @@ class Entry:
         else:
             full_path = entry_path
 
-        # return self.dictionary.add(full_path, value)
-        return self.add(full_path, value)
+        return self.dictionary.add(full_path, value)
 
     def delete(self) -> bool:
         """Deletes this entry from the dictionary."""

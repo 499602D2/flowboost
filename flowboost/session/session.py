@@ -465,12 +465,20 @@ class Session:
 
         state = {
             "session": {
-                "name": self.name,
-                "data_dir": str(self.data_dir),
-                "case_dir": str(self.pending_dir),
-                "archival_dir": str(self.archival_dir),
-                "dataframe_format": self.dataframe_format,
-                "created_at": self.created_at.isoformat(),
+                k: v
+                for k, v in {
+                    "name": self.name,
+                    "data_dir": str(self.data_dir),
+                    "case_dir": str(self.pending_dir),
+                    "archival_dir": str(self.archival_dir),
+                    "dataframe_format": self.dataframe_format,
+                    "clone_method": self.clone_method,
+                    "created_at": self.created_at.isoformat(),
+                    "max_evaluations": self.max_evaluations,
+                    "target_value": self.target_value,
+                    "target_objective": self.target_objective,
+                }.items()
+                if v is not None
             },
             "template": {
                 "path": str(self._template_case.path) if self._template_case else "",
@@ -501,9 +509,15 @@ class Session:
         self.dataframe_format = str(
             data.get("session", {}).get("dataframe_format", "polars")
         )
+        self.clone_method = data.get("session", {}).get(
+            "clone_method", "foamCloneCase"
+        )
         self.created_at = datetime.fromisoformat(
             data.get("session", {}).get("created_at")
         )
+        self.max_evaluations = data.get("session", {}).get("max_evaluations")
+        self.target_value = data.get("session", {}).get("target_value")
+        self.target_objective = data.get("session", {}).get("target_objective")
 
         # [template]
         self._template_case = Case.try_restoring(
