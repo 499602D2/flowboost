@@ -113,19 +113,19 @@ class FOAMRuntime:
                 f"Dockerfile directory not found at {DOCKERFILE_DIR}"
             )
 
-        logging.info(
-            f"Building Docker image '{self._docker_image}' — this is a "
-            f"one-time operation..."
+        logging.warning(
+            "Docker image '%s' not found — building from %s "
+            "(this may take a few minutes)",
+            self._docker_image,
+            DOCKERFILE_DIR,
         )
         result = subprocess.run(
             ["docker", "build", "-t", self._docker_image, str(DOCKERFILE_DIR)],
-            stderr=PIPE,
-            text=True,
             timeout=600,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to build Docker image: {result.stderr}")
-        logging.info(f"Docker image '{self._docker_image}' built successfully")
+            raise RuntimeError(f"Failed to build Docker image '{self._docker_image}'")
+        logging.info("Docker image '%s' built successfully", self._docker_image)
 
     def is_available(self) -> bool:
         """Check if this runtime can actually execute FOAM commands."""
@@ -135,6 +135,26 @@ class FOAMRuntime:
             # Available if image exists or can be built
             return self._docker_image_available() or DOCKERFILE_DIR.is_dir()
         return False
+
+    def ensure_image(self):
+        """Build the Docker image if it doesn't exist. No-op in native mode.
+
+        Unlike ``ensure_setup``, this does **not** start a container, so it
+        can be called before mounts are configured -- e.g. from a
+        ``pytest_configure`` hook that runs before workers spawn.
+        """
+        if self.mode == FOAMRuntime.Mode.DOCKER:
+            self._ensure_docker_image()
+
+    def ensure_setup(self):
+        """Eagerly prepare the runtime (build image + start container).
+
+        Call from test fixtures (after configuring mounts) so that a
+        missing Docker image surfaces immediately instead of blocking
+        silently on the first FOAM command.
+        """
+        if self.mode == FOAMRuntime.Mode.DOCKER:
+            self._ensure_container()
 
     # ------------------------------------------------------------------
     # Container lifecycle

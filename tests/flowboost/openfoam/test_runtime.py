@@ -588,10 +588,8 @@ class TestEnsureDockerImage:
             patch("flowboost.openfoam.runtime.DOCKERFILE_DIR", tmp_path),
             patch("subprocess.run") as mock_run,
         ):
-            mock_run.return_value = subprocess.CompletedProcess(
-                [], 1, "", "build error details"
-            )
-            with pytest.raises(RuntimeError, match="build error details"):
+            mock_run.return_value = subprocess.CompletedProcess([], 1)
+            with pytest.raises(RuntimeError, match="Failed to build"):
                 docker_runtime._ensure_docker_image()
 
 
