@@ -429,21 +429,29 @@ def test_issue_style_search_space_encoding_matches_ax_schema():
     ]
 
 
-def test_issue_style_generation_propagates_disabled_deduplication():
+def test_issue_style_generation_passes_disabled_deduplication_to_ax(monkeypatch):
     # Behaviorally forcing Ax to return a duplicate is fragile: the Sobol
     # engine is quasi-random and the BO step's rejection sampler rejects
     # repeats independently of `should_deduplicate`, so the outcome hinges
-    # on the exact Ax version. Instead, verify the flag is plumbed through
-    # to every generation step — that is the invariant FlowBoost owns.
+    # on the exact Ax version. FlowBoost owns passing the flag into Ax's
+    # generation-strategy configuration; Ax owns how it applies that setting
+    # internally across strategy steps / nodes.
     backend, _ = _make_issue_style_backend(
         random_seed=0,
         should_deduplicate=False,
     )
+    captured: dict[str, object] = {}
+
+    def fake_create_experiment(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(backend.client, "create_experiment", fake_create_experiment)
+
     backend.initialize()
 
-    steps = backend.client.generation_strategy._steps
-    assert steps, "Expected at least one generation step"
-    assert all(step.should_deduplicate is False for step in steps)
+    gs_kwargs = captured["choose_generation_strategy_kwargs"]
+    assert isinstance(gs_kwargs, dict)
+    assert gs_kwargs["should_deduplicate"] is False
 
 
 def test_issue_style_generation_avoids_repeats_with_deduplication(tmp_path):
