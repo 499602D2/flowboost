@@ -103,6 +103,24 @@ class TestObjectiveDataForCase:
         assert obj.data_for_case(case, post_processed=False) is None
 
 
+class TestObjectiveExceptionPropagation:
+    def test_exception_propagates(self, case):
+        def exploding_fn(c):
+            raise ZeroDivisionError("boom")
+
+        obj = Objective("test", minimize=True, objective_function=exploding_fn)
+        with pytest.raises(ZeroDivisionError, match="boom"):
+            obj.evaluate(case)
+
+    def test_exception_type_preserved(self, case):
+        def key_error_fn(c):
+            raise KeyError("missing_col")
+
+        obj = Objective("test", minimize=True, objective_function=key_error_fn)
+        with pytest.raises(KeyError):
+            obj.evaluate(case)
+
+
 class TestAggregateObjective:
     def _make_objectives(self):
         obj1 = Objective("a", minimize=True, objective_function=lambda c: 2.0)

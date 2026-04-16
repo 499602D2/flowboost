@@ -1,5 +1,7 @@
 """Extended tests for FOAMType: parse assertions, to_FOAM, round-trips, vectors/tensors."""
 
+import math
+
 import numpy as np
 import pytest
 
@@ -171,6 +173,41 @@ class TestConstructSymmTensor:
     def test_symmetric(self):
         tensor = FOAMType.construct_symm_tensor([1, 2, 3, 4, 5, 6])
         np.testing.assert_array_equal(tensor, tensor.T)
+
+
+class TestParseEdgeCases:
+    """Edge cases around the fixed zero-value code path."""
+
+    def test_dimensioned_nan(self):
+        name, dim, value = FOAMType.parse("nu [0 2 -1 0 0 0 0] NaN")
+        assert name == "nu"
+        assert dim == "[0 2 -1 0 0 0 0]"
+        assert math.isnan(value)
+
+    def test_dimensioned_inf(self):
+        name, dim, value = FOAMType.parse("nu [0 2 -1 0 0 0 0] inf")
+        assert name == "nu"
+        assert value == float("inf")
+
+    def test_negative_zero(self):
+        _, _, value = FOAMType.parse("-0")
+        assert value == 0
+
+    def test_negative_zero_float(self):
+        _, _, value = FOAMType.parse("-0.0")
+        assert value == -0.0
+        assert isinstance(value, float)
+
+    def test_positive_inf_scalar(self):
+        result = FOAMType.try_parse_scalar("+inf")
+        assert result == float("inf")
+
+    def test_dimensioned_empty_value(self):
+        """Dimension present but no value after it — falls through to string."""
+        name, dim, value = FOAMType.parse("nu [0 2 -1 0 0 0 0] ")
+        # try_parse_scalar("") returns None, falls through to Switch then string
+        # Current behavior: returns full data string as value, losing name/dim
+        assert value is not None  # doesn't crash
 
 
 class TestSwitch:

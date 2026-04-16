@@ -2,6 +2,7 @@
 
 import pytest
 
+from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
 from flowboost.optimizer.interfaces.Ax import AxBackend
 from flowboost.optimizer.objectives import Objective
@@ -95,3 +96,24 @@ class TestFixedDimensionEncoding:
         assert p["type"] == "fixed"
         assert p["value"] == 42
         assert p["value_type"] == "int"
+
+
+class TestBatchProcessAllFailed:
+    def test_all_cases_failed_returns_empty(self, tmp_path):
+        backend = AxBackend()
+        backend.set_search_space([_make_dim()])
+        obj = Objective(
+            "test", minimize=True, objective_function=lambda c: None
+        )
+        backend.set_objectives([obj])
+
+        cases = []
+        for i in range(3):
+            d = tmp_path / f"case_{i}"
+            d.mkdir()
+            cases.append(Case(d))
+
+        result = backend.batch_process(cases)
+        assert result == []
+        # All should be marked failed
+        assert all(c.success is False for c in cases)
