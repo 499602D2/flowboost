@@ -51,6 +51,7 @@ def foam_tutorial_dict_paths(foam_in_env) -> Generator[Path, None, None]:
                     yield foam_file
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("limit", [None, 10])
 def test_init_on_all_tutorials(foam_tutorial_dict_paths, limit):
     """Test initializing Dictionaries on all tutorial paths, optionally limited."""
@@ -64,6 +65,7 @@ def test_init_on_all_tutorials(foam_tutorial_dict_paths, limit):
         # Consider asserting something here to make it a valid test
 
 
+@pytest.mark.slow
 def test_entry_read_and_write(tutorial_dictionary_reader):
     """Test reading and writing entries in a dictionary."""
     foam_file = "XiFluid/moriyoshiHomogeneous/moriyoshiHomogeneous/constant/physicalProperties.hydrogen"
@@ -85,6 +87,7 @@ def test_entry_read_and_write(tutorial_dictionary_reader):
     assert reset_mol_weight == 16.0243, "Reset operation failed"
 
 
+@pytest.mark.slow
 def test_add_and_delete_entry(tutorial_dictionary_reader):
     """Test adding and deleting entries."""
     foam_file = "XiFluid/moriyoshiHomogeneous/moriyoshiHomogeneous/constant/physicalProperties.hydrogen"
@@ -106,6 +109,7 @@ def test_add_and_delete_entry(tutorial_dictionary_reader):
     assert deleted_entry is None, "Entry was not deleted successfully"
 
 
+@pytest.mark.slow
 def test_entry_indexing(tutorial_dictionary_reader):
     """Test indexing functionality of entries."""
     p = "XiFluid/moriyoshiHomogeneous/moriyoshiHomogeneous/constant/combustionProperties"
@@ -139,6 +143,7 @@ def test_linking():
         "constant/physicalProperties").entry("FoamFile/format")
 
 
+@pytest.mark.slow
 def test_dimensioned_entry_RW(foam_in_env, test_case):
     soi_path = "subModels/injectionModels/model1/SOI"
     soi_entry = test_case.dictionary(

@@ -139,6 +139,7 @@ def test_tell_on_unevaluated_case_raises_clear_error(tmp_path):
         backend.tell([other])
 
 
+@pytest.mark.slow
 def test_tell(Ax_backend, test_case, foam_in_env):
     # Evaluate an objective
     obj = Ax_backend.objectives[0]
