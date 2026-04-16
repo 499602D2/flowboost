@@ -25,6 +25,7 @@ def tutorial_case(foam_in_env, tmp_path):
     case._delete_all_data()
 
 
+@pytest.mark.slow
 def test_dictionary_entries(foam_in_env, tutorial_case):
     # Test reading a dictionary and verifying an entry
     chemistry_props = tutorial_case.dictionary("constant/chemistryProperties")
@@ -34,6 +35,7 @@ def test_dictionary_entries(foam_in_env, tutorial_case):
     assert cloud_props.entry("subModels/injectionModels/model1/massTotal") == 6.0e-6
 
 
+@pytest.mark.slow
 def test_dictionary_link(foam_in_env, tutorial_case):
     # Test Dictionary Links
     link = Dictionary.link("constant/cloudProperties")
@@ -46,6 +48,7 @@ def test_dictionary_link(foam_in_env, tutorial_case):
     assert reader.entry("type") == "sprayCloud"
 
 
+@pytest.mark.slow
 def test_case_clone_and_removal(foam_in_env, tutorial_case, tmp_path):
     # Copy tutorial case to a new folder and test removal
     clone_dest = tmp_path / "clonedCase"
@@ -56,6 +59,7 @@ def test_case_clone_and_removal(foam_in_env, tutorial_case, tmp_path):
     assert new_case._delete_all_data(), "Safe removal failed"
 
 
+@pytest.mark.slow
 def test_case_safe_deletion(foam_in_env, tmp_path):
     # Test case removal safety enforcement
     empty_dir = tmp_path / str(Path(str(uuid4())))

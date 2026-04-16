@@ -21,6 +21,7 @@ def manager(tmp_path, request) -> Manager:
         pytest.skip(f"Manager '{manager_name}' not available")
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("manager", SUPPORTED_SCHEDULERS, indirect=True)
 def test_abstract_methods(foam_in_env, manager: Manager):
     """

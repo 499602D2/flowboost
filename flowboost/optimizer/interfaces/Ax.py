@@ -6,6 +6,7 @@ from typing import Any, Optional, Union
 
 from ax.core.arm import Arm
 from ax.core.base_trial import BaseTrial
+from ax.exceptions.core import DataRequiredError
 from ax.service.ax_client import AxClient, ObjectiveProperties, TParameterization
 
 from flowboost.openfoam.case import Case
@@ -13,6 +14,11 @@ from flowboost.optimizer.backend import Backend, OptimizationComplete
 from flowboost.optimizer.objectives import AggregateObjective, Objective
 from flowboost.optimizer.scalars import coerce_objective_scalar
 from flowboost.optimizer.search_space import Dimension
+
+# Mirrors `ax.generation_strategy.dispatch_utils.DEFAULT_BAYESIAN_CONCURRENCY`.
+# We re-declare it so the BO-step parallelism cap stays explicit after we
+# disable `enforce_sequential_optimization` (see `AxBackend.initialize`).
+DEFAULT_BO_CONCURRENCY = 3
 
 
 class AxBackend(Backend):
@@ -45,23 +51,36 @@ class AxBackend(Backend):
         self._SEM_by_objective: dict[str, Optional[float]] = {}
         self._trial_index_case_mapping: dict[Case, int] = {}
 
-    def initialize(self, num_already_completed: int = 0):
+    def initialize(self):
         if not self.stateless:
             raise NotImplementedError("Stateful optimizer checkpoints not implemented")
 
         # Check objectives + dimensions
         self._verify_configuration()
 
-        # Compute remaining initialization trials, accounting for already-completed ones
-        base_init = (
+        # Pass the user's full Sobol budget straight through. Ax's
+        # `use_existing_trials_for_initialization=True` (default) already
+        # counts previously-attached completed trials toward this budget, so
+        # shrinking it ourselves here double-counts and silently starves the
+        # initialization phase — e.g. `initialization_trials=5` running only
+        # 3 Sobol trials before BO takes over, leaving the surrogate badly
+        # under-sampled and prone to locking onto boundaries.
+        num_init = (
             self.initialization_trials if self.initialization_trials is not None else 5
         )
-        remaining_init = max(0, base_init - num_already_completed)
 
-        logging.info(
-            f"Ax initialization: base={base_init}, already_completed={num_already_completed}, "
-            f"remaining_init_trials={remaining_init}"
-        )
+        logging.info(f"Ax initialization: num_initialization_trials={num_init}")
+
+        if self.max_parallelism is None:
+            max_parallelism_override = DEFAULT_BO_CONCURRENCY
+        else:
+            max_parallelism_override = self.max_parallelism
+            if max_parallelism_override > DEFAULT_BO_CONCURRENCY:
+                logging.warning(
+                    f"max_parallelism={max_parallelism_override} exceeds Ax's "
+                    f"recommended BO concurrency ({DEFAULT_BO_CONCURRENCY}); "
+                    "the surrogate benefits from more sequential observations."
+                )
 
         # Create a stateless optimizer client
         self.client.create_experiment(
@@ -70,12 +89,19 @@ class AxBackend(Backend):
             parameter_constraints=self._parameter_constraints,
             outcome_constraints=self._outcome_constraints,
             choose_generation_strategy_kwargs={
-                "num_initialization_trials": remaining_init,
+                "num_initialization_trials": num_init,
                 "use_saasbo": self.SAASBO,
                 "disable_progbar": False,
-                "max_parallelism_override": self.max_parallelism,
+                "max_parallelism_override": max_parallelism_override,
                 "random_seed": self.random_seed,
                 "should_deduplicate": self.should_deduplicate,
+                # Drops the Sobol step's `MaxTrialsAwaitingData` pausing
+                # criterion, which otherwise starves low-`num_init` configs
+                # after a reload attaches a pending RUNNING trial. Concurrency
+                # is still bounded by `MaxGenerationParallelism` via
+                # `max_parallelism_override`, and flowboost's Manager caps
+                # total in-flight jobs externally.
+                "enforce_sequential_optimization": False,
             },
         )
 
@@ -225,9 +251,8 @@ class AxBackend(Backend):
         if not self.stateless:
             raise ValueError("Re-initialize should not be called when stateless=False")
         self.client = AxClient()
-        num_completed = len(self._trial_index_case_mapping)
         self._trial_index_case_mapping = {}
-        self.initialize(num_already_completed=num_completed)
+        self.initialize()
 
     def set_objectives(self, objectives: list[Union[Objective, AggregateObjective]]):
         if isinstance(objectives, (Objective, AggregateObjective)):
@@ -315,9 +340,20 @@ class AxBackend(Backend):
         return self.ask(max_cases=max_cases)
 
     def _ask(self, max_cases: int) -> dict[int, TParameterization]:
-        new_parametrizations, finished = self.client.get_next_trials(
-            max_trials=max_cases
-        )
+        try:
+            new_parametrizations, finished = self.client.get_next_trials(
+                max_trials=max_cases
+            )
+        except DataRequiredError as exc:
+            raise ValueError(
+                "Cannot generate trials: the optimizer has no observations to "
+                "fit a surrogate on. This happens when `initialization_trials="
+                f"{self.initialization_trials}` is 0 (or too low) and no "
+                "completed trials are attached. Either raise "
+                "`initialization_trials` (5+ is a reasonable default), or "
+                "feed cold-start trials via `Backend.tell(...)` before calling "
+                "`ask()`."
+            ) from exc
 
         if finished:
             logging.info("Optimization finished")

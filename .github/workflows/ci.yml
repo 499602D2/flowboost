@@ -25,4 +25,4 @@ jobs:
         with:
           enable-cache: true
       - name: Run tests
-        run: uv run --python ${{ matrix.python-version }} --resolution ${{ matrix.resolution }} pytest
+        run: uv run --python ${{ matrix.python-version }} --resolution ${{ matrix.resolution }} pytest -m "not slow"

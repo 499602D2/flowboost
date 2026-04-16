@@ -2,7 +2,6 @@ import importlib.resources as pkg_resources
 import json
 import logging
 import shutil
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union, Literal
@@ -13,7 +12,10 @@ from flowboost.openfoam.case import Case, path_is_foam_dir, unique_id
 from flowboost.openfoam.dictionary import Dictionary, DictionaryLink, DictionaryReader
 from flowboost.openfoam.types import FOAMType
 from flowboost.optimizer.acquisition_offload import OFFLOAD_SCRIPT
-from flowboost.optimizer.backend import DEFAULT_OFFLOAD_RESULT_FNAME, OptimizationComplete
+from flowboost.optimizer.backend import (
+    DEFAULT_OFFLOAD_RESULT_FNAME,
+    OptimizationComplete,
+)
 from flowboost.optimizer.interfaces.Ax import Backend
 from flowboost.optimizer.search_space import Dimension
 
@@ -764,7 +766,10 @@ class Session:
         Returns:
             bool: True if optimization should stop, False otherwise
         """
-        finished_cases = self.get_finished_cases(include_failed=False)
+        finished_cases = self.get_finished_cases(
+            include_failed=False,
+            batch_process=self.target_value is not None,
+        )
 
         # Criterion 1: Maximum number of evaluations
         if self.max_evaluations is not None:

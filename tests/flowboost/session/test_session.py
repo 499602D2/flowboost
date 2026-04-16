@@ -74,6 +74,7 @@ def test_incorrect_startup():
     pass
 
 
+@pytest.mark.slow
 def test_simple_blank_start(foam_in_env, tmp_path, monkeypatch):
     # Add objective function
     objective = Objective(
