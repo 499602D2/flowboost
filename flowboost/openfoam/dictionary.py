@@ -80,7 +80,7 @@ class DictionaryReader(Dictionary):
     `dictionary/readme.md`.
     """
 
-    def __init__(self, path):
+    def __init__(self, path: str | Path):
         super().__init__(path)
         self._keywords: Optional[list[Entry]] = None
 
@@ -140,6 +140,13 @@ class DictionaryReader(Dictionary):
             bool: True on success, False on failure
         """
         return self.set(entry=entry, new_value=new_value)
+
+    def require_entry(self, entry: str) -> "Entry":
+        """Return *entry* or raise if it does not exist."""
+        found = self.entry(entry)
+        if found is None:
+            raise ValueError(f"No such entry in {self}: {entry}")
+        return found
 
     def add(self, entry_path: str, value: Any) -> Optional["Entry"]:
         """Adds a new entry to the dictionary at the specified path with the given value."""
@@ -432,6 +439,15 @@ class Entry:
 
         return None
 
+    def require_entry(self, entry_path: str) -> "Entry":
+        """Return *entry_path* or raise if it does not exist."""
+        found = self.entry(entry_path)
+        if found is None:
+            raise ValueError(
+                f"No such sub-entry in '{self.print_path()}' for path '{entry_path}'"
+            )
+        return found
+
     def set(
         self, new_value: Any, override: bool = False, write_dimensioned: bool = False
     ) -> bool:
@@ -536,6 +552,9 @@ class Entry:
             full_path = self.print_path() + "/" + entry_path
         else:
             full_path = entry_path
+
+        if not isinstance(self.dictionary, DictionaryReader):
+            raise TypeError("Entry.add() requires a DictionaryReader-backed entry")
 
         return self.dictionary.add(full_path, value)
 

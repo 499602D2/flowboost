@@ -235,7 +235,7 @@ class FOAMRuntime:
             )
         self._mounts.append((host_path.resolve(), guest_path))
 
-    def _auto_mount(self, command: list, cwd: Path | None):
+    def _auto_mount(self, command: list[str | Path], cwd: Path | None):
         """Auto-register mounts for host paths not covered by existing mounts.
 
         Collects absolute host paths from command args and cwd, finds their
@@ -325,22 +325,26 @@ class FOAMRuntime:
     # ------------------------------------------------------------------
 
     def run(
-        self, command: list, cwd: Path | None = None
-    ) -> subprocess.CompletedProcess:
+        self, command: list[str | Path], cwd: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
         """Execute a command, routing FOAM commands through Docker if needed."""
-        cmd_name = Path(command[0]).name if command else ""
+        command_args = [str(arg) for arg in command]
+        cmd_name = Path(command_args[0]).name if command_args else ""
 
         if self.mode == FOAMRuntime.Mode.NATIVE or cmd_name not in self.FOAM_COMMANDS:
-            return subprocess.run(command, stdout=PIPE, stderr=PIPE, cwd=cwd, text=True)
+            return subprocess.run(
+                command_args, stdout=PIPE, stderr=PIPE, cwd=cwd, text=True
+            )
 
         return self._docker_exec(command, cwd)
 
     def _docker_exec(
-        self, command: list, cwd: Path | None
-    ) -> subprocess.CompletedProcess:
+        self, command: list[str | Path], cwd: Path | None
+    ) -> subprocess.CompletedProcess[str]:
         self._auto_mount(command, cwd)
         self._ensure_container()
         translated_cmd, translated_cwd = self._translate_command(command, cwd)
+        assert self._container_id is not None
 
         # Build shell command with proper quoting
         shell_cmd = " ".join(shlex.quote(str(c)) for c in translated_cmd)
@@ -378,6 +382,7 @@ class FOAMRuntime:
             return self._cached_foam_tutorials
 
         self._ensure_container()
+        assert self._container_id is not None
         result = subprocess.run(
             [
                 "docker",
@@ -446,7 +451,7 @@ class FOAMRuntime:
         return str(host_path)
 
     def _translate_command(
-        self, command: list, cwd: Path | None
+        self, command: list[str | Path], cwd: Path | None
     ) -> tuple[list[str], str | None]:
         """Translate command args and cwd for container execution."""
         translated_cmd = [str(command[0])]  # command name stays as-is

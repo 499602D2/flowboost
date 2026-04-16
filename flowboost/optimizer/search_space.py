@@ -1,6 +1,6 @@
 import logging
 import math
-from typing import Any, Literal, Optional, Type, Union
+from typing import Any, Optional, Type, Union
 
 from flowboost.openfoam.dictionary import DictionaryLink
 
@@ -15,11 +15,11 @@ class Dimension:
     """A search space dimension linked to an OpenFOAM dictionary entry.
     Create via ``Dimension.range()``, ``Dimension.fixed()``, or ``Dimension.choice()``."""
 
-    def __init__(self, name: str, type: Literal["range", "fixed", "choice"]):
+    def __init__(self, name: str, type: str):
         if " " in name:
             raise ValueError(f"Dimension name cannot contain spaces: '{name}'")
         self.name = name
-        self.type = type
+        self.type: str = type
         self.value_type: Optional[str] = None
         self.is_fidelity: Optional[bool] = None
         self.target_value: Optional[float] = None
@@ -33,7 +33,7 @@ class Dimension:
         # Link to an OpenFOAM dictionary entry
         self.linked_entry: Optional[DictionaryLink] = None
 
-    def link_to(self, dictionary_link: DictionaryLink):
+    def link_to(self, dictionary_link: DictionaryLink) -> None:
         """Links a search space dimension to a corresponding OpenFOAM
         dictionary entry, which gets manipulated during the optimization
 

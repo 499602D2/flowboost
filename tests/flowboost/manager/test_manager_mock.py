@@ -26,7 +26,12 @@ class MockManager(Manager):
     def _cancel_job(self, job_id: str) -> bool:
         return True
 
-    def submit_case(self, case: Case, script_args: dict = {}) -> bool:
+    def submit_case(
+        self,
+        case: Case,
+        script_args: dict[str, Any] = {},
+        script_name: str | None = None,
+    ) -> bool:
         return True
 
     def cancel_job(self, job: JobV2) -> bool:

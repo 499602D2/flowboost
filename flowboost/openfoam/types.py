@@ -1,6 +1,6 @@
 import re
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 
@@ -49,6 +49,9 @@ class FOAMType:
                 value = parts[0]
 
         # Attempt to directly return the parsed scalar types
+        if value is None:
+            return name, dimension, value
+
         scalar_value = FOAMType.try_parse_scalar(value)
 
         if scalar_value is not None:
@@ -178,21 +181,25 @@ class FOAMType:
                 return [data]  # Return as string if not parsing
 
         numbers = [FOAMType.try_parse_scalar(num) for num in re.split(r"\s+", data)]
+        if any(num is None for num in numbers):
+            return np.array(numbers)
 
-        if len(numbers) == 1:
-            return numbers[0]  # Spherical Tensor
-        elif len(numbers) == 3:
-            return np.array(numbers)  # Vector
-        elif len(numbers) == 6:
+        parsed_numbers = cast(list[int | float], numbers)
+
+        if len(parsed_numbers) == 1:
+            return parsed_numbers[0]  # Spherical Tensor
+        elif len(parsed_numbers) == 3:
+            return np.array(parsed_numbers)  # Vector
+        elif len(parsed_numbers) == 6:
             # Symmetrical Tensor
-            return FOAMType.construct_symm_tensor(numbers)
-        elif len(numbers) == 9:
-            return np.array(numbers).reshape((3, 3))  # Tensor
+            return FOAMType.construct_symm_tensor(parsed_numbers)
+        elif len(parsed_numbers) == 9:
+            return np.array(parsed_numbers).reshape((3, 3))  # Tensor
         else:
-            return np.array(numbers)  # Fallback, just in case
+            return np.array(parsed_numbers)  # Fallback, just in case
 
     @staticmethod
-    def parse_subdict(data: str) -> dict:
+    def parse_subdict(data: str) -> dict[str, Any]:
         # Very rudimentary parser for sub-dictionaries
         # Assumes well-formed input because I'm not writing a full parser here
         subdict_str = data.strip("{}").strip()
@@ -216,7 +223,7 @@ class FOAMType:
         return parsed_dict
 
     @staticmethod
-    def construct_symm_tensor(components):
+    def construct_symm_tensor(components: list[int | float]) -> np.ndarray:
         assert len(components) == 6, "Symmetrical tensor must have 6 components"
         tensor = np.zeros((3, 3))
         indices = [(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)]
@@ -235,5 +242,5 @@ class Switch(Enum):
     INVALID = None  # Use None for invalid to explicitly indicate an unhandled case
 
     @classmethod
-    def from_string(cls, value: str):
+    def from_string(cls, value: str) -> "Switch":
         return cls.__members__.get(value.upper(), cls.INVALID)

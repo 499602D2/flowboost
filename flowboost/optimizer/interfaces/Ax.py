@@ -182,7 +182,7 @@ class AxBackend(Backend):
                 for obj_name, outcome in data_dict["objectives"].items()
             }
 
-            ax.client.complete_trial(trial_index=idx, raw_data=raw_data)  # type: ignore
+            ax.client.complete_trial(trial_index=idx, raw_data=raw_data)
 
         # Attach pending trials to backend
         logging.info("Attaching pending trials")
@@ -429,7 +429,7 @@ class AxBackend(Backend):
         return prediction
 
     def _post_process_suggestion_parametrizations(
-        self, parametrizations: dict[int, TParameterization]
+        self, parametrizations: dict[int, dict[str, Any]]
     ) -> list[dict[Dimension, Any]]:
         """
         Converts the list of string-keyed dictionaries, mapping search space
@@ -443,11 +443,11 @@ class AxBackend(Backend):
             list[dict[Dimension, Any]]: Dimension-keyed list of \
                 parametrizations.
         """
-        processed = []
+        processed: list[dict[Dimension, Any]] = []
 
         # For each parametrization, convert the str-keys to be Dimensions
         for trial_index, parametrization in parametrizations.items():
-            new_suggestion = {}
+            new_suggestion: dict[Dimension, Any] = {}
             for str_key, val in parametrization.items():
                 dim = self._dim_name_to_dimension(str_key)
                 new_suggestion[dim] = val
@@ -558,11 +558,11 @@ class AxBackend(Backend):
 
             self.client.complete_trial(
                 trial_index=self._trial_index_case_mapping[case],
-                raw_data=raw_data,  # type: ignore
+                raw_data=raw_data,
             )
 
-    def _get_ax_objectives(self):
-        ax_objectives = {}
+    def _get_ax_objectives(self) -> dict[str, ObjectiveProperties]:
+        ax_objectives: dict[str, ObjectiveProperties] = {}
         for objective in self.objectives:
             ax_objectives[objective.name] = ObjectiveProperties(
                 minimize=objective.minimize, threshold=objective.threshold
@@ -570,8 +570,12 @@ class AxBackend(Backend):
 
         return ax_objectives
 
-    def _dim_to_Ax_parameter_dict(self, dim: Dimension):
-        d = {"name": dim.name, "type": dim.type, "value_type": dim.value_type}
+    def _dim_to_Ax_parameter_dict(self, dim: Dimension) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "name": dim.name,
+            "type": dim.type,
+            "value_type": dim.value_type,
+        }
 
         match dim.type:
             case "range":

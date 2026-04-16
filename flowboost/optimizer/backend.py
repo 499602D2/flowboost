@@ -19,6 +19,8 @@ class Backend(ABC):
         self.objectives: list[Union[Objective, AggregateObjective]] = []
         self.dimensions: list[Dimension] = []
         self.offload_acquisition: bool = False
+        self.random_seed: int | None = None
+        self.initialization_trials: int | None = None
         self._initialized: bool = False
 
     def _ensure_initialized(self, op: str) -> None:
@@ -92,7 +94,7 @@ class Backend(ABC):
 
     @abstractmethod
     def _post_process_suggestion_parametrizations(
-        self, parametrizations: Any
+        self, parametrizations: dict[int, dict[str, Any]]
     ) -> list[dict[Dimension, Any]]:
         """
         Post-process the result of Backend.ask(), returning a list of
@@ -287,7 +289,9 @@ class Backend(ABC):
             # Save post-processed values
             case.update_metadata(objective_results, entry_header="objective-outputs")
             # Save raw values
-            case.update_metadata(raw_objective_results, entry_header="objective-values-raw")
+            case.update_metadata(
+                raw_objective_results, entry_header="objective-values-raw"
+            )
             logging.debug(f"Saved objective outputs to metadata for {case.name}")
         return final_outputs
 

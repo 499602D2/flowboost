@@ -360,8 +360,8 @@ class Manager(ABC):
 
         return Case(job.wdir)
 
-    def _state(self) -> dict:
-        state = {
+    def _state(self) -> dict[str, Any]:
+        state: dict[str, Any] = {
             "type": self.type,
             "wdir": str(self.wdir),
             "job_limit": self.job_limit,

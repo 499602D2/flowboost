@@ -1,7 +1,10 @@
 import json
 import logging
+from typing import Any, cast
 
 import pytest
+from ax.core.arm import Arm
+from ax.core.trial import Trial
 
 from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
@@ -11,6 +14,17 @@ from flowboost.optimizer.objectives import AggregateObjective, Objective
 from flowboost.optimizer.search_space import Dimension
 
 
+def _trial_for_case(backend: AxBackend, case: Case) -> Trial:
+    trial = backend.client.experiment.trials[backend._trial_index_case_mapping[case]]
+    assert isinstance(trial, Trial)
+    return trial
+
+
+def _trial_arm(trial: Trial) -> Arm:
+    assert trial.arm is not None
+    return trial.arm
+
+
 @pytest.fixture
 def Ax_backend() -> AxBackend:
     # Test that AxBackend initializes correctly
@@ -18,34 +32,28 @@ def Ax_backend() -> AxBackend:
 
     # Add objective
     objective = Objective(
-        name="test_objective",
-        minimize=True,
-        objective_function=lambda x: 1
+        name="test_objective", minimize=True, objective_function=lambda x: 1
     )
 
     # Define something to modify
-    dict_link = DictionaryLink(
-        "constant/chemistryProperties").entry("tabulation/tolerance")
+    dict_link = DictionaryLink("constant/chemistryProperties").entry(
+        "tabulation/tolerance"
+    )
 
     # Add dimension for the dictionary entry
     dim = Dimension.range(
-        name="test_dim",
-        link=dict_link,
-        lower=1e-5,
-        upper=1e-1,
-        log_scale=True)
+        name="test_dim", link=dict_link, lower=1e-5, upper=1e-1, log_scale=True
+    )
 
     # Define something to modify
-    dict_link = DictionaryLink(
-        "constant/cloudProperties").entry("subModels/injectionModels/model1/SOI")
+    dict_link = DictionaryLink("constant/cloudProperties").entry(
+        "subModels/injectionModels/model1/SOI"
+    )
 
     # Add dimension for the dictionary entry
     dim = Dimension.range(
-        name="test_dim",
-        link=dict_link,
-        lower=1e-5,
-        upper=1e-1,
-        log_scale=True)
+        name="test_dim", link=dict_link, lower=1e-5, upper=1e-1, log_scale=True
+    )
 
     # Set search space + objectives
     backend.set_search_space([dim])
@@ -73,9 +81,7 @@ def test_ask_raises_optimization_complete_instead_of_sys_exit(Ax_backend, monkey
     def fake_get_next_trials(*args, **kwargs):
         return ({}, True)  # empty parametrizations, finished=True
 
-    monkeypatch.setattr(
-        Ax_backend.client, "get_next_trials", fake_get_next_trials
-    )
+    monkeypatch.setattr(Ax_backend.client, "get_next_trials", fake_get_next_trials)
 
     with pytest.raises(OptimizationComplete):
         Ax_backend.ask(max_cases=1)
@@ -120,9 +126,7 @@ def test_ask_returns_empty_when_backend_yields_no_trials(Ax_backend, monkeypatch
     def fake_get_next_trials(*args, **kwargs):
         return ({}, False)  # empty, not finished
 
-    monkeypatch.setattr(
-        Ax_backend.client, "get_next_trials", fake_get_next_trials
-    )
+    monkeypatch.setattr(Ax_backend.client, "get_next_trials", fake_get_next_trials)
 
     assert Ax_backend.ask(max_cases=1) == []
 
@@ -236,10 +240,10 @@ def _make_issue_style_backend(
     objective = Objective(
         name="score",
         minimize=True,
-        objective_function=lambda case: float(
-            case.read_metadata()["optimizer-suggestion"]["heatSource"]["value"]
-        )
-        + float(case.read_metadata()["optimizer-suggestion"]["position"]["value"]),
+        objective_function=lambda case: (
+            float(case.read_metadata()["optimizer-suggestion"]["heatSource"]["value"])
+            + float(case.read_metadata()["optimizer-suggestion"]["position"]["value"])
+        ),
     )
     backend.set_objectives([objective])
     return backend, objective
@@ -342,12 +346,8 @@ def test_tell_reuses_existing_arm_for_duplicate_parameterizations(tmp_path):
 
     backend.tell([first_case, second_case])
 
-    first_trial = backend.client.experiment.trials[
-        backend._trial_index_case_mapping[first_case]
-    ]
-    second_trial = backend.client.experiment.trials[
-        backend._trial_index_case_mapping[second_case]
-    ]
+    first_trial = _trial_for_case(backend, first_case)
+    second_trial = _trial_for_case(backend, second_case)
 
     assert first_trial.index != second_trial.index
     assert first_trial.status.is_completed
@@ -385,18 +385,14 @@ def test_tell_collapses_boundary_float_noise_onto_one_arm(tmp_path):
         assert case in backend._trial_index_case_mapping
 
     arm_names = {
-        backend.client.experiment.trials[
-            backend._trial_index_case_mapping[c]
-        ].arm.name
+        _trial_arm(_trial_for_case(backend, c)).name
         for c in (exact, noisy_up, noisy_down)
     }
     assert arm_names == {exact.name}
     assert list(backend.client.experiment.arms_by_name) == [exact.name]
 
 
-def test_prepare_for_acquisition_offload_serializes_normalized_outputs(
-    tmp_path
-):
+def test_prepare_for_acquisition_offload_serializes_normalized_outputs(tmp_path):
     case = _make_case(tmp_path, "offload-case")
     backend, _ = _make_normalized_backend(case)
     backend.offload_acquisition = True
@@ -528,8 +524,7 @@ def test_issue_style_generation_passes_disabled_deduplication_to_ax(monkeypatch)
 
     backend.initialize()
 
-    gs_kwargs = captured["choose_generation_strategy_kwargs"]
-    assert isinstance(gs_kwargs, dict)
+    gs_kwargs = cast(dict[str, Any], captured["choose_generation_strategy_kwargs"])
     assert gs_kwargs["should_deduplicate"] is False
 
 

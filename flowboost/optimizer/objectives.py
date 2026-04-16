@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Optional
 from uuid import uuid4
 
 import numpy as np
@@ -19,9 +19,7 @@ class Objective:
         minimize: bool,
         objective_function: Callable,
         objective_function_kwargs: Optional[dict[str, Any]] = None,
-        normalization_step: Optional[
-            Literal["min-max", "yeo-johnson", "box-cox"]
-        ] = None,
+        normalization_step: Optional[str] = None,
         threshold: Optional[float] = None,
     ) -> None:
         """ An optimization objective that produces a quantifiable result for
@@ -103,9 +101,7 @@ class Objective:
         if normalization_step:
             self.add_normalization_step(method=normalization_step)
 
-    def add_normalization_step(
-        self, method: Literal["min-max", "yeo-johnson", "box-cox"]
-    ):
+    def add_normalization_step(self, method: str) -> None:
         """Simple high-level method of integrating a normalization step to the
         objective pipeline. The methods are from `sklearn.preprocessing`.
 
@@ -140,7 +136,7 @@ class Objective:
             step=ScikitNormalizationStep(normalizer).evaluate
         )
 
-    def attach_post_processing_step(self, step: Callable, **kwargs: Optional[dict]):
+    def attach_post_processing_step(self, step: Callable, **kwargs: Any) -> None:
         """Add a new post-processing step to this Objective. The post-processing
         steps are evaluated in order of `Objective._post_processing_steps`: thus,
         the order they are added in matters.
@@ -317,7 +313,9 @@ class AggregateObjective:
         """
         self._post_processing_steps.append((step, kwargs))
 
-    def evaluate(self, case: Case, save_value: bool = True) -> Optional[tuple[Any, ...]]:
+    def evaluate(
+        self, case: Case, save_value: bool = True
+    ) -> Optional[tuple[Any, ...]]:
         if case.success is False:
             logging.warning("Case has been marked as failed: not evaluating objective")
             return None
@@ -338,9 +336,7 @@ class AggregateObjective:
     def _evaluate_batch(
         self, cases: list[Case], save_values: bool = False
     ) -> list[Optional[tuple[Any, ...]]]:
-        all_outputs = [
-            self.evaluate(case, save_value=save_values) for case in cases
-        ]
+        all_outputs = [self.evaluate(case, save_value=save_values) for case in cases]
         return all_outputs
 
     def batch_evaluate(

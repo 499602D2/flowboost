@@ -36,6 +36,7 @@ class TestDimensionChoice:
     def test_explicit_dtype(self):
         dim = Dimension.choice("x", _dummy_link(), [1, 2, 3], dtype=float)
         assert dim.value_type == "float"
+        assert dim.values is not None
         assert all(isinstance(v, float) for v in dim.values)
 
     def test_explicit_bool_dtype_rejects_invalid_tokens(self):
