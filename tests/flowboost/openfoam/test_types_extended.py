@@ -47,6 +47,24 @@ class TestParseAssertions:
         assert dim is None
         assert value == 273.15
 
+    def test_vector_value_only(self):
+        name, dim, value = FOAMType.parse("( 1 2 3 )")
+        assert name is None
+        assert dim is None
+        np.testing.assert_array_equal(value, np.array([1, 2, 3]))
+
+    def test_tensor_value_only(self):
+        name, dim, value = FOAMType.parse("( 1 0 0 0 1 0 0 0 1 )")
+        assert name is None
+        assert dim is None
+        np.testing.assert_array_equal(value, np.eye(3))
+
+    def test_dimensioned_vector_value(self):
+        name, dim, value = FOAMType.parse("U [0 1 -1 0 0 0 0] ( 1 2 3 )")
+        assert name == "U"
+        assert dim == "[0 1 -1 0 0 0 0]"
+        np.testing.assert_array_equal(value, np.array([1, 2, 3]))
+
 
 class TestParseZero:
     """Regression tests: parse must handle 0/0.0 as numeric, not string."""
@@ -211,14 +229,25 @@ class TestParseEdgeCases:
 
 
 class TestSwitch:
-    @pytest.mark.parametrize("s,expected", [
-        ("true", True), ("True", True), ("TRUE", True),
-        ("yes", True), ("YES", True),
-        ("on", True), ("ON", True),
-        ("false", False), ("False", False), ("FALSE", False),
-        ("no", False), ("NO", False),
-        ("off", False), ("OFF", False),
-    ])
+    @pytest.mark.parametrize(
+        "s,expected",
+        [
+            ("true", True),
+            ("True", True),
+            ("TRUE", True),
+            ("yes", True),
+            ("YES", True),
+            ("on", True),
+            ("ON", True),
+            ("false", False),
+            ("False", False),
+            ("FALSE", False),
+            ("no", False),
+            ("NO", False),
+            ("off", False),
+            ("OFF", False),
+        ],
+    )
     def test_valid_switches(self, s, expected):
         assert Switch.from_string(s).value == expected
 

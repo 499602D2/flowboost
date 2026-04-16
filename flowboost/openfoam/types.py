@@ -18,9 +18,13 @@ class FOAMType:
         Returns:
             tuple[str, str, Any]: The read (name, dimension, value) of the entry.
         """
+        raw_data = data.strip()
+        if not raw_data:
+            return None, None, ""
+
         # Use regex to search for dimension set
         dimension_regex = re.compile(r"\[.*?\]")
-        dimension_match = dimension_regex.search(data)
+        dimension_match = dimension_regex.search(raw_data)
 
         # Initialize variables
         # https://doc.cfd.direct/openfoam/user-guide-v11/basic-file-format
@@ -28,20 +32,21 @@ class FOAMType:
 
         if dimension_match:
             dimension = dimension_match.group(0)
-            before_dimension, _, after_dimension = data.partition(dimension)
+            before_dimension, _, after_dimension = raw_data.partition(dimension)
             name = before_dimension.strip()
             value = after_dimension.strip()
         else:
+            if raw_data.startswith("(") and raw_data.endswith(")"):
+                return None, None, FOAMType.parse_vector_space(raw_data)
+
             # Handle case without dimension
-            parts = data.split()
+            parts = raw_data.split(maxsplit=1)
 
             if len(parts) == 2:
                 name, value = parts[0], parts[1]
             elif len(parts) == 1:
                 # If there's only one part, consider it as value for simplicity
                 value = parts[0]
-            else:
-                raise ValueError(f"Parsing error: parts={parts}, len={len(parts)}")
 
         # Attempt to directly return the parsed scalar types
         scalar_value = FOAMType.try_parse_scalar(value)
@@ -50,16 +55,16 @@ class FOAMType:
             return name, dimension, scalar_value
 
         # Handle non-scalar types with a separate method
-        if data.startswith("(") and data.endswith(")"):
-            return name, dimension, FOAMType.parse_vector_space(data)
+        if value and value.startswith("(") and value.endswith(")"):
+            return name, dimension, FOAMType.parse_vector_space(value)
 
         # Attempt to parse as boolean
-        boolean_value = Switch.from_string(data).value
+        boolean_value = Switch.from_string(value).value
         if boolean_value is not None:
             return (name, dimension, boolean_value)
 
         # If all else fails, return the data as is (as value)
-        return None, None, data
+        return name, dimension, value
 
     @staticmethod
     def to_FOAM(data: Any) -> str:

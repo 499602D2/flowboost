@@ -26,6 +26,19 @@ if TYPE_CHECKING:
 
 DEFAULT_METADATA: str = "metadata.toml"
 GENERATION_INDEX_SORT_SENTINEL: str = "99999.99"
+_PERSISTED_STATE_KEYS: set[str] = {
+    "name",
+    "id",
+    "path",
+    "status",
+    "success",
+    "created_at",
+    "submitted_at",
+    "generation_index",
+    "based_on_case",
+    "model_predictions_by_objective",
+    "execution_environment",
+}
 
 
 class Status(Enum):
@@ -504,7 +517,7 @@ class Case:
             "success": self.success,
             # Optional properties
             "created_at": self._created_at.isoformat(),
-            "submitted_at": self._submitted_at,
+            "submitted_at": _serialize_optional_datetime(self._submitted_at),
             "generation_index": self._generation_index,
             "based_on_case": str(self._based_on_case) if self._based_on_case else None,
             "model_predictions_by_objective": self._model_predictions_by_objective,
@@ -529,12 +542,14 @@ class Case:
         else:
             data = tomlkit.document()
 
-        # Get the current state
         new_state = self.state()
 
-        # Update the existing data with the new state
-        # This ensures we only update values for existing keys and add new keys
-        # without removing anything
+        # Replace only the fields owned by Case.state(), while preserving any
+        # auxiliary metadata written by other subsystems.
+        for key in _PERSISTED_STATE_KEYS:
+            if key in data:
+                del data[key]
+
         for key, value in new_state.items():
             data[key] = value
 
@@ -606,7 +621,8 @@ class Case:
     def restore_from_file(
         cls, case_directory: Path | str, fname: str = DEFAULT_METADATA
     ) -> "Case":
-        file = Path(case_directory, fname)
+        restored_path = Path(case_directory).resolve().absolute()
+        file = Path(restored_path, fname)
 
         if not file.exists():
             raise FileNotFoundError(f"Case info file not found [{file}]")
@@ -615,22 +631,35 @@ class Case:
             data = tomlkit.load(toml_file)
 
         # Main properties
-        case = cls(path=str(data["path"]))
-        case.id = str(data["id"])
+        case = cls(path=restored_path)
+        case.id = str(data.get("id", case.id))
+
+        stored_path = data.get("path")
+        if stored_path and Path(stored_path).resolve() != restored_path:
+            logging.info(
+                "Restoring case from '%s' instead of persisted path '%s'",
+                restored_path,
+                stored_path,
+            )
 
         # Status properties
         case.status = Status(data.get("status", "not_submitted"))
         case.success = data.get("success", None)
 
         # Additional properties that may or may not exist
-        case._based_on_case = data.get("based_on_case")
-        case._created_at = datetime.fromisoformat(data.get("created_at", ""))
+        based_on_case = data.get("based_on_case")
+        case._based_on_case = Path(based_on_case) if based_on_case else None
+
+        created_at = _parse_optional_datetime(data.get("created_at"))
+        if created_at is not None:
+            case._created_at = created_at
+
         case._generation_index = data.get("generation_index")
         case._model_predictions_by_objective = data.get(
             "model_predictions_by_objective"
         )
         case._execution_environment = data.get("execution_environment")
-        case._submitted_at = data.get("submitted_at")
+        case._submitted_at = _parse_optional_datetime(data.get("submitted_at"))
 
         return case
 
@@ -756,3 +785,20 @@ def unique_id(hashable: Any = None) -> str:
     if not hashable:
         hashable = uuid4()
     return blake2b(str(hashable).encode()).hexdigest()[0:8]
+
+
+def _serialize_optional_datetime(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+
+    return value.isoformat()
+
+
+def _parse_optional_datetime(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+
+    if isinstance(value, datetime):
+        return value
+
+    return datetime.fromisoformat(str(value))

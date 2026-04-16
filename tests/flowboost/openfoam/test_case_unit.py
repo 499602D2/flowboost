@@ -1,6 +1,7 @@
 """Unit tests for Case state/persistence — no OpenFOAM CLI needed."""
 
 from datetime import datetime, timezone
+import shutil
 
 import pytest
 
@@ -82,9 +83,9 @@ class TestCasePersistRestore:
         case.persist_to_file()
         restored = Case.restore_from_file(case.path)
         # fromisoformat may lose timezone info, so compare timestamps
-        assert abs(
-            restored._created_at.timestamp() - case._created_at.timestamp()
-        ) < 1.0
+        assert (
+            abs(restored._created_at.timestamp() - case._created_at.timestamp()) < 1.0
+        )
 
     def test_restore_missing_file_raises(self, tmp_path):
         d = tmp_path / "nonexistent_case"
@@ -101,6 +102,38 @@ class TestCasePersistRestore:
     def test_try_restoring_without_file(self, case):
         restored = Case.try_restoring(case.path)
         assert restored.success is None  # fresh Case
+
+    def test_restore_uses_restored_directory_path_for_copied_case(self, tmp_path, case):
+        case.persist_to_file()
+
+        copied_dir = tmp_path / "copied_case"
+        shutil.copytree(case.path, copied_dir)
+
+        restored = Case.restore_from_file(copied_dir)
+
+        assert restored.path == copied_dir.resolve().absolute()
+        assert restored.name == "copied_case"
+
+    def test_persist_clears_removed_state_fields_without_touching_other_metadata(
+        self, case
+    ):
+        case.success = False
+        case._submitted_at = datetime.now(tz=timezone.utc)
+        case.update_metadata({"kept": True}, entry_header="custom")
+        case.persist_to_file()
+
+        case.success = None
+        case._submitted_at = None
+        case.persist_to_file()
+
+        restored = Case.restore_from_file(case.path)
+        metadata = case.read_metadata()
+
+        assert restored.success is None
+        assert restored._submitted_at is None
+        assert "success" not in metadata
+        assert "submitted_at" not in metadata
+        assert metadata["custom"]["kept"] is True
 
 
 class TestCaseMetadata:
