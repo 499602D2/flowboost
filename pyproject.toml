@@ -1,6 +1,6 @@
 [project]
 name = "flowboost"
-version = "0.2.8"
+version = "0.2.9"
 description = "Multi-objective Bayesian optimization library for OpenFOAM"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
@@ -85,6 +85,4 @@ log_cli_date_format = "%Y-%m-%d %H:%M:%S"
 # Filter the warning by message so it never crosses the worker→controller
 # boundary. Category-based filters don't help because pytest resolves the
 # category class eagerly, which re-triggers the same import.
-filterwarnings = [
-    "ignore:Data .outcome observations. is not standardized",
-]
+filterwarnings = ["ignore:Data .outcome observations. is not standardized"]
