@@ -2,18 +2,18 @@ from __future__ import annotations  # pre-3.11 compatibility
 
 import logging
 import os
+import shutil
 import stat
 from datetime import datetime, timezone
 from enum import Enum
 from hashlib import blake2b
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Optional, Union, Literal
+from typing import TYPE_CHECKING, Any, Literal, Optional, Union, overload
 from uuid import uuid4
-import shutil
 
 import tomlkit
 
-from flowboost.openfoam.data import Data
+from flowboost.openfoam.data import PolarsData, _BACKENDS as _DATA_BACKENDS
 from flowboost.openfoam.dictionary import DictionaryLink, DictionaryReader, Entry
 from flowboost.openfoam.interface import FOAM, run_command
 from flowboost.openfoam.runtime import FOAMRuntime, get_runtime
@@ -39,6 +39,7 @@ _PERSISTED_STATE_KEYS: set[str] = {
     "model_predictions_by_objective",
     "execution_environment",
 }
+MetadataDict = dict[str, Any]
 
 
 class Status(Enum):
@@ -51,7 +52,12 @@ class Case:
     """An OpenFOAM case directory. Provides dictionary access, cloning,
     data loading, and metadata persistence."""
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        data_backend: Literal["pandas", "polars"] = "polars",
+    ) -> None:
         """Create a new abstraction for an OpenFOAM case.
 
         When creating a new Case from scratch, the initialization must be
@@ -59,6 +65,7 @@ class Case:
 
         Args:
             path (Path | str): Path to an existing case directory.
+            data_backend: DataFrame backend for postProcessing data access.
 
         Raises:
             FileNotFoundError: If provided path is not found.
@@ -74,7 +81,8 @@ class Case:
         self.success: Optional[bool] = None
 
         # Data access for a case (through case.data property)
-        self._data: Data = Data(path=self.path)
+        self._data_backend: Literal["pandas", "polars"] = data_backend
+        self._data = _DATA_BACKENDS[data_backend](path=self.path)
 
         # Additional attributes that can be configured: not required, but
         # helpful for posterity.
@@ -95,10 +103,18 @@ class Case:
             raise FileNotFoundError(f"Directory does not exist [{str(self)}]")
 
     @property
-    def data(self) -> Data:
+    def data(self) -> PolarsData:
+        """Data reader for this case's postProcessing output.
+
+        Returns the backend selected at construction (Polars by default).
+        Use ``backend="pandas"`` on individual read calls to override, e.g.::
+
+            case.data.simple_function_object_reader("forces", backend="pandas")
+        """
         if self._data.path != self.path:
-            self._data = Data(path=self.path)
-        return self._data
+            self._data.path = self.path
+            self._data.post_processing_path = self.path / "postProcessing"
+        return self._data  # type: ignore[return-value]
 
     def mark_failed(self):
         self.success = False
@@ -164,7 +180,7 @@ class Case:
         else:
             raise ValueError(f"Unknown clone method: '{method}'")
 
-        new = Case(path=new_case_path)
+        new = Case(path=new_case_path, data_backend=self._data_backend)
         new._based_on_case = self.path
         return new
 
@@ -351,9 +367,13 @@ class Case:
         """
         return run_command(command, cwd=cwd or self.path)
 
-    def dictionary(
-        self, read_from: str | DictionaryLink
-    ) -> Union[DictionaryReader, Entry]:
+    @overload
+    def dictionary(self, read_from: str) -> DictionaryReader: ...
+
+    @overload
+    def dictionary(self, read_from: DictionaryLink) -> DictionaryReader | Entry: ...
+
+    def dictionary(self, read_from: str | DictionaryLink) -> DictionaryReader | Entry:
         """ Access a FOAM dictionary file for this case using either a DictionaryLink or
         a dictionary path relative to the case directory.
 
@@ -371,7 +391,13 @@ class Case:
         if isinstance(read_from, str):
             return DictionaryReader(self.path / read_from)
 
-        return read_from.reader(self.path)
+        resolved = read_from.reader(self.path)
+        if isinstance(resolved, (DictionaryReader, Entry)):
+            return resolved
+
+        raise ValueError(
+            f"Dictionary link did not resolve to an entry or dictionary: {read_from}"
+        )
 
     def parametrize_configuration(self, dimensions: list[Dimension]) -> dict[str, Any]:
         """
@@ -409,7 +435,7 @@ class Case:
 
         return par_dict
 
-    def _read_dimension_value(self, dim: Dimension, suggestions: dict) -> Any:
+    def _read_dimension_value(self, dim: Dimension, suggestions: MetadataDict) -> Any:
         """Return the raw value for *dim* from metadata or the linked dictionary."""
         # Try saved optimizer-suggestion metadata first (for completed cases)
         suggestion = suggestions.get(dim.name, {})
@@ -501,7 +527,7 @@ class Case:
         """
         raise NotImplementedError("Parquet serialization to implemented")
 
-    def state(self) -> dict:
+    def state(self) -> MetadataDict:
         """Return a dictionary representing the key attributes and properties
         of this case, useful for further processing into e.g. TOML/JSON.
 
@@ -559,10 +585,10 @@ class Case:
 
     def update_metadata(
         self,
-        update_entries: dict,
+        update_entries: MetadataDict,
         entry_header: Optional[str] = None,
         fname: str = DEFAULT_METADATA,
-    ):
+    ) -> None:
         """
         Updates the case metadata file with new entries.
 
@@ -608,18 +634,24 @@ class Case:
 
     def read_metadata(
         self, from_file: str = DEFAULT_METADATA
-    ) -> Optional[tomlkit.TOMLDocument]:
+    ) -> Optional[MetadataDict]:
         file_path = Path(self.path, from_file)
         if not file_path.exists():
             return None
 
         # Read the existing data from the file
         with open(file_path, "r") as toml_file:
-            return tomlkit.load(toml_file)
+            data = tomlkit.load(toml_file)
+
+        return data.unwrap()
 
     @classmethod
     def restore_from_file(
-        cls, case_directory: Path | str, fname: str = DEFAULT_METADATA
+        cls,
+        case_directory: Path | str,
+        fname: str = DEFAULT_METADATA,
+        *,
+        data_backend: Literal["pandas", "polars"] = "polars",
     ) -> "Case":
         restored_path = Path(case_directory).resolve().absolute()
         file = Path(restored_path, fname)
@@ -631,7 +663,7 @@ class Case:
             data = tomlkit.load(toml_file)
 
         # Main properties
-        case = cls(path=restored_path)
+        case = cls(path=restored_path, data_backend=data_backend)
         case.id = str(data.get("id", case.id))
 
         stored_path = data.get("path")
@@ -664,7 +696,13 @@ class Case:
         return case
 
     @classmethod
-    def try_restoring(cls, case_dir: Path | str, fname: str = DEFAULT_METADATA) -> Case:
+    def try_restoring(
+        cls,
+        case_dir: Path | str,
+        fname: str = DEFAULT_METADATA,
+        *,
+        data_backend: Literal["pandas", "polars"] = "polars",
+    ) -> Case:
         """
         Tries restoring a Case from a directory. If no persistence file is
         found, the Case object is re-initialized.
@@ -672,14 +710,15 @@ class Case:
         Args:
             case_dir (Path | str): Path to try restoring from
             fname (str, optional): File to restore from. Defaults to DEFAULT_METADATA.
+            data_backend: DataFrame backend for postProcessing data access.
 
         Returns:
             Case: Restored or new case
         """
         if Path(case_dir, fname).exists():
-            return cls.restore_from_file(case_dir, fname)
+            return cls.restore_from_file(case_dir, fname, data_backend=data_backend)
 
-        return cls(case_dir)
+        return cls(case_dir, data_backend=data_backend)
 
     @staticmethod
     def _force_rmtree(path: Path):
