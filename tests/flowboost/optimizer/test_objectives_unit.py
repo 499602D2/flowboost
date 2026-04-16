@@ -3,7 +3,11 @@
 import pytest
 
 from flowboost.openfoam.case import Case
-from flowboost.optimizer.objectives import AggregateObjective, Objective
+from flowboost.optimizer.objectives import (
+    AggregateObjective,
+    Objective,
+    ScikitNormalizationStep,
+)
 
 
 @pytest.fixture
@@ -190,3 +194,51 @@ class TestAggregateObjective:
         agg.batch_process([case])
         assert agg.data_for_case(case, post_processed=True) == 5.0
         assert agg.data_for_case(case, post_processed=False) == [2.0, 3.0]
+
+
+class TestScikitNormalizationStep:
+    def test_rejects_object_without_fit_transform(self):
+        with pytest.raises(ValueError, match="fit_transform"):
+            ScikitNormalizationStep({"not": "a normalizer"})
+
+    def test_rejects_lambda(self):
+        with pytest.raises(ValueError, match="fit_transform"):
+            ScikitNormalizationStep(lambda x: x)
+
+    def test_accepts_valid_normalizer(self):
+        from sklearn.preprocessing import MinMaxScaler
+        step = ScikitNormalizationStep(MinMaxScaler())
+        result = step.evaluate([1.0, 2.0, 3.0])
+        assert result[0] == pytest.approx(0.0)
+        assert result[-1] == pytest.approx(1.0)
+
+
+class TestAddNormalizationStep:
+    def test_unsupported_method_raises(self):
+        obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
+        with pytest.raises(ValueError, match="Unsupported"):
+            obj.add_normalization_step("z-score")
+
+    def test_supported_methods(self):
+        for method in ("min-max", "yeo-johnson"):
+            obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
+            obj.add_normalization_step(method)
+            assert len(obj._post_processing_steps) == 1
+
+
+class TestExecutePostProcessingSteps:
+    def test_mismatched_counts_raises(self, tmp_path):
+        d = tmp_path / "case"
+        d.mkdir()
+        case = Case(d)
+
+        obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
+        with pytest.raises(ValueError, match="Case count"):
+            obj.execute_post_processing_steps(
+                cases=[case], outputs=[1.0, 2.0]
+            )
+
+    def test_empty_returns_empty(self):
+        obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
+        result = obj.execute_post_processing_steps(cases=[], outputs=[])
+        assert result == {}

@@ -98,6 +98,68 @@ class TestFixedDimensionEncoding:
         assert p["value_type"] == "int"
 
 
+class TestBackendCreate:
+    def test_ax_lowercase(self):
+        backend = AxBackend.create("ax")
+        assert isinstance(backend, AxBackend)
+
+    def test_axbackend_mixed_case(self):
+        backend = AxBackend.create("AxBackend")
+        assert isinstance(backend, AxBackend)
+
+    def test_unknown_raises(self):
+        with pytest.raises(NotImplementedError):
+            AxBackend.create("unknown_backend")
+
+
+class TestPostProcessSuggestionParametrizations:
+    def test_maps_str_keys_to_dimensions(self):
+        backend = AxBackend()
+        dim_a = _make_dim("alpha")
+        dim_b = _make_dim("beta")
+        backend.set_search_space([dim_a, dim_b])
+
+        parametrizations = {0: {"alpha": 1.0, "beta": 2.0}}
+        result = backend._post_process_suggestion_parametrizations(parametrizations)
+
+        assert len(result) == 1
+        assert result[0][dim_a] == 1.0
+        assert result[0][dim_b] == 2.0
+
+    def test_unknown_key_raises(self):
+        backend = AxBackend()
+        backend.set_search_space([_make_dim("known")])
+
+        with pytest.raises(ValueError, match="not found"):
+            backend._post_process_suggestion_parametrizations(
+                {0: {"unknown_dim": 1.0}}
+            )
+
+    def test_empty_parametrizations(self):
+        backend = AxBackend()
+        backend.set_search_space([_make_dim()])
+        assert backend._post_process_suggestion_parametrizations({}) == []
+
+
+class TestDimToAxEdgeCases:
+    def test_fixed_with_no_values_raises(self):
+        backend = AxBackend()
+        dim = Dimension("x", "fixed")
+        dim.value_type = "int"
+        dim.values = None
+        backend.set_search_space([dim])
+        with pytest.raises(ValueError, match="specified value"):
+            backend._get_ax_search_space()
+
+    def test_unknown_dim_type_raises(self):
+        backend = AxBackend()
+        dim = Dimension("x", "bogus")
+        dim.value_type = "int"
+        backend.set_search_space([dim])
+        with pytest.raises(ValueError, match="not supported"):
+            backend._get_ax_search_space()
+
+
 class TestBatchProcessAllFailed:
     def test_all_cases_failed_returns_empty(self, tmp_path):
         backend = AxBackend()

@@ -144,7 +144,7 @@ class AxBackend(Backend):
         # Ensure all files exist
         for p in (model_snapshot, data_snapshot):
             if not p.exists():
-                raise FileNotFoundError(f"File not found [{model_snapshot}]")
+                raise FileNotFoundError(f"File not found [{p}]")
 
         # Restore backend
         logging.info("Restoring Ax backend from state snapshot")
