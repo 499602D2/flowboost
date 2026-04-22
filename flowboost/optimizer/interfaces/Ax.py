@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
+import torch
 from ax.core.arm import Arm
 from ax.core.base_trial import BaseTrial
 from ax.exceptions.core import DataRequiredError
@@ -192,7 +193,12 @@ class AxBackend(Backend):
                 case_name=case_name,
             )
 
-        # Run acquisition
+        # Run acquisition.  Note: unlike `_ask()`, we do NOT seed torch
+        # here.  The restored backend has no access to the user's
+        # `random_seed` (it is not part of the Ax JSON snapshot), and
+        # offloaded acquisition runs in a separate process on a cluster
+        # node where the global torch state is inherently uncontrolled.
+        # Determinism across offloaded runs is not guaranteed.
         logging.info("Data loaded: running model update + acquisition")
         new_parametrizations, finished = ax.client.get_next_trials(
             max_trials=num_trials
@@ -340,6 +346,16 @@ class AxBackend(Backend):
         return self.ask(max_cases=max_cases)
 
     def _ask(self, max_cases: int) -> dict[int, TParameterization]:
+        # Ax's `random_seed` only controls the Sobol engine; the BO
+        # acquisition optimizer's random restarts consume from the global
+        # PyTorch RNG, which makes results non-deterministic across
+        # separate replay sessions.  Seeding torch here with a value
+        # derived from `random_seed` and the current trial count makes
+        # BO suggestions reproducible given the same experiment state.
+        if self.random_seed is not None:
+            n_trials = len(self.client.experiment.trials)
+            torch.manual_seed(self.random_seed + n_trials)
+
         try:
             new_parametrizations, finished = self.client.get_next_trials(
                 max_trials=max_cases
@@ -470,20 +486,29 @@ class AxBackend(Backend):
                 parametrizations for each case. Parametrizations are dicts, \
                 mapping all search space dimension names to a value.
         """
+        attached = 0
+        skipped = 0
         for case in cases:
             if case in self._trial_index_case_mapping:
-                logging.info(f"Case already attached in _ensure_attached, {case}")
+                logging.debug(f"Case already attached, skipping: {case}")
+                skipped += 1
                 continue
 
             # Generate parametrizations: these describe the search space for Ax.
             # Type coercion is handled by Case.parametrize_configuration().
             p = case.parametrize_configuration(self.dimensions)
 
-            logging.info(f"Attaching c={case.name}, p={p}")
+            logging.debug(f"Attaching c={case.name}, p={p}")
             idx = self._attach_trial_with_case_name(parameters=p, case_name=case.name)
 
             # TODO if we were to run in stateful mode, we'd stash the index
             self._trial_index_case_mapping[case] = idx
+            attached += 1
+
+        if attached or skipped:
+            logging.info(
+                f"Attached {attached} trial(s), skipped {skipped} already-attached"
+            )
 
     def _attach_trial_with_case_name(
         self, parameters: TParameterization, case_name: str

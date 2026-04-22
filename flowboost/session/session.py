@@ -52,8 +52,13 @@ class Session:
                 basis. Defaults to polars.
             backend (str, optional): Optimization backend to use. Defaults to "Ax".
             clone_method (Literal["foamCloneCase", "copy"], optional): Method to use for cloning cases. Defaults to "foamCloneCase".
-            random_seed (Optional[int], optional): Optional optimizer seed for \
-                reproducible candidate generation. Defaults to None.
+            random_seed (Optional[int], optional): Seed for reproducible \
+                candidate generation. Seeds the Sobol initialization engine \
+                (via Ax) and resets the global PyTorch RNG before each \
+                acquisition call, ensuring deterministic suggestions across \
+                session restarts. Note: this mutates ``torch``'s global RNG \
+                state, which may affect user code that depends on it in the \
+                same process. Defaults to None (non-deterministic).
             max_evaluations (Optional[int], optional): Maximum number of evaluations \
                 before stopping optimization. Defaults to None (no limit).
             target_value (Optional[float], optional): Target objective value to reach. \
