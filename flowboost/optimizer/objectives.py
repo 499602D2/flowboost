@@ -1,9 +1,7 @@
 import logging
-from typing import Any, Callable, Optional
+import math
+from typing import Any, Callable, Optional, Union
 from uuid import uuid4
-
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler, PowerTransformer
 
 from flowboost.openfoam.case import Case
 from flowboost.optimizer.scalars import coerce_objective_scalar
@@ -11,7 +9,14 @@ from flowboost.optimizer.scalars import coerce_objective_scalar
 
 class Objective:
     """A named optimization objective that evaluates a Case and returns a
-    scalar value. Supports minimization/maximization and optional normalization."""
+    scalar value.
+
+    Outcome standardization is the optimizer backend's job (Ax wraps every
+    metric in StandardizeY + BoTorch's Standardize). Don't add normalization
+    here. If your measurement is naturally non-linear (log-distributed drag,
+    say), pass `static_transform=math.log` — a pure float→float function,
+    applied per evaluation, no fitting, no state.
+    """
 
     def __init__(
         self,
@@ -19,262 +24,107 @@ class Objective:
         minimize: bool,
         objective_function: Callable,
         objective_function_kwargs: Optional[dict[str, Any]] = None,
-        normalization_step: Optional[str] = None,
         threshold: Optional[float] = None,
+        static_transform: Optional[Callable[[float], float]] = None,
     ) -> None:
-        """ An optimization objective that produces a quantifiable result for
-        an OpenFOAM simulation. An Objective operates on an objective function,
-        usings its evaluated value for informing the optimization process.
-
-        The objective function is expected to return something that is, ideally,
-        simply a scalar value. However, as you may define an arbitrary
-        post-processing step for the Objective, operating on the output vector
-        the Objective produces from all data points, the output can be arbitrary.
-
-        More specifically:
-        1) Objective consumes data (pd.DataFrame) for OpenFOAM Case
-        2) `objective_function` operates on the data, returning an arbitrary
-        value which is associated with the Case.
-        3) Any values returned by `objective_function` can be later accesses as
-        a vector, composed of the outputs of Objective for each OpenFOAM case.
-
-        Additionally, you may pass arbitrary (constant) data to the function
-        you have defined. This can be a DataFrame of reference data for a
-        baseline simulation, or something completely different.
+        """An optimization objective for an OpenFOAM simulation.
 
         Args:
-            name (str): Name or description for this objective
-            minimize (bool): Optimization objective: is the objective \
-                function to be minimized, maximized, or something else?
-            objective_function (Callable): An objective function for  \
-                computing a quantified value. Function should accept at least \
-                    one argument (Case), and potentially additional kwargs.
-            objective_function_kwargs (dict, optional): Arbitrary additional \
-                data passed to objective_function as kwargs. Defaults to {}.
-            threshold (float, optional): Optional threshold value for MOO \
-                objectives (see Ax documentation). Defaults to None.
+            name: Identifier for the objective. Must be unique across all
+                metrics in the experiment (including those wrapped in a
+                ScalarizedObjective).
+            minimize: True to minimize, False to maximize.
+            objective_function: Callable taking a Case (and optional kwargs)
+                and returning a scalar. Returning None marks the case failed.
+            objective_function_kwargs: Extra kwargs passed through to
+                `objective_function` on every call.
+            threshold: Optional MOO objective threshold (see Ax docs). Only
+                used by backends that support multi-objective Pareto fronts.
+            static_transform: Optional pure float→float transform applied to
+                each scalar output. Use for domain-driven re-expressions
+                (e.g. `math.log` for a log-distributed quantity). Not for
+                normalization — the backend handles that.
         """
         self.name: str = name
         self.id: str = str(uuid4())
-
-        # Goal for optimization task
         self.minimize: bool = minimize
-
-        # Objective threshold: this is used by Ax during MOO, and is not
-        # leveraged by all backends.
-        #
-        # For any objective function to be maximized, represents the _lowest_
-        # objective value that is considered valuable in the context of
-        # multi-objective optimization. Applies in the opposite manner for
-        # objectives that are to be minimized.
         self.threshold: Optional[float] = threshold
-
-        # User-provided function instance performing arbitrary computation
-        # on a Pandas DataFrame, and returning some comparable result that
-        # can be used during the optimization process.
         self.objective_function: Callable = objective_function
-
-        # Additional data that gets passed to the objective function. This can
-        # be anything, potentially an aggregated DataFrame for a baseline
-        # simulation used for comparisons, or something more esoteric.
         self.objective_function_kwargs: dict[str, Any] = dict(
             objective_function_kwargs or {}
         )
+        self.static_transform: Optional[Callable[[float], float]] = static_transform
 
-        # Any post-processing steps to be completed for this objective.
-        # Post-processing is performed once _all_ Case objects have had the
-        # objective_function evaluated: the post processing function thus gets
-        # passed a vector of all results from the Objective outputs for each
-        # Case.
-        #
-        # The steps are defined as a tuple of (Callable, arg1, arg2, ...),
-        # where the args get unpacked and automatically passed to the
-        # post-processing function during evaluation.
-        self._post_processing_steps: list[tuple[Callable, Any]] = []
+        self._values: dict[Case, float] = {}
 
-        # Data storage for each case that gets evaluated by this objective.
-        # Raw outputs may be arbitrary, but post-processed outputs must be
-        # scalar numerics suitable for optimization backends.
-        self._objective_output_data: dict[Case, Any] = {}
-        self._post_processed_data: dict[Case, float] = {}
+    def evaluate(self, case: Case, save_value: bool = True) -> Optional[float]:
+        """Evaluate the objective for a single case.
 
-        if normalization_step:
-            self.add_normalization_step(method=normalization_step)
-
-    def add_normalization_step(self, method: str) -> None:
-        """Simple high-level method of integrating a normalization step to the
-        objective pipeline. The methods are from `sklearn.preprocessing`.
-
-        The normalization step is performed once all points in the dataset have
-        been evaluated using this Objective function. The input is, thus, the
-        array of outputs this Objective has generated.
-
-        For custom normalization steps not supported by this function, use the
-        `Objective.attach_post_processing_step()` method, which accepts any
-        arbitrary Callable + kwargs.
-
-        Args:
-            method (Literal): Normalization method to use: min-max or power-transform.
-
-        Raises:
-            ValueError: If method is not implemented
-        """
-        match method.lower():
-            case "min-max":
-                normalizer = MinMaxScaler()
-            case "yeo-johnson":
-                normalizer = PowerTransformer(method="yeo-johnson")
-            case "box-cox":
-                normalizer = PowerTransformer(method="box-cox")
-            case _:
-                logging.warning(
-                    "For custom normalization methods, use `attach_post_processing_step`"
-                )
-                raise ValueError(f"Unsupported normalization method '{method}'")
-
-        self.attach_post_processing_step(
-            step=ScikitNormalizationStep(normalizer).evaluate
-        )
-
-    def attach_post_processing_step(self, step: Callable, **kwargs: Any) -> None:
-        """Add a new post-processing step to this Objective. The post-processing
-        steps are evaluated in order of `Objective._post_processing_steps`: thus,
-        the order they are added in matters.
-
-        A typical use-case would be a normalization step.
-
-        Args:
-            step (Callable): _description_
-        """
-        self._post_processing_steps.append((step, kwargs))
-
-    def execute_post_processing_steps(
-        self, cases: list[Case], outputs: list[Any], save_output: bool = True
-    ) -> dict[Case, float]:
-        if len(outputs) != len(cases):
-            raise ValueError(
-                f"Case count != output count: cases={cases}, outputs={outputs}"
-            )
-
-        if len(outputs) == 0:
-            return {}
-
-        # Iterate over post-processing steps
-        for step, kwargs in self._post_processing_steps:
-            # Apply the step to the entire array of outputs
-            # Consider using try-except to handle errors gracefully
-            try:
-                outputs = step(outputs, **kwargs)
-            except Exception as e:
-                raise ValueError(f"Error applying post-processing step {step}: {e}")
-
-            try:
-                output_count = len(outputs)
-            except TypeError as e:
-                raise ValueError(
-                    f"Post-processing step {step} must return a sized collection: {e}"
-                )
-
-            if output_count != len(cases):
-                raise ValueError(
-                    f"Post-processing step {step} changed output cardinality: "
-                    f"expected {len(cases)}, got {output_count}"
-                )
-
-        # Optionally, save post-processed outputs back to a dictionary keyed by Case
-        # if specific per-case post-processed data is needed for further analysis
-        out_dict: dict[Case, float] = {}
-        for case, processed_output in zip(cases, outputs):
-            out_dict[case] = coerce_objective_scalar(
-                processed_output,
-                label=f"Post-processed objective '{self.name}' output",
-            )
-
-        if save_output:
-            self._post_processed_data = out_dict
-
-        return out_dict
-
-    def evaluate(self, case: Case, save_value: bool = True) -> Optional[Any]:
-        """
-        Evaluates the objective function for a case, returning the output
-        value. If the objective function returns a None-type, the value is
-        not saved to the objective to avoid post-processing failures.
-
-        Args:
-            case (Case): _description_
-            save_value (bool, optional): _description_. Defaults to True.
-
-        Returns:
-            Any: Value of the objective function output for a successful case: \
-                None indicates an evaluation failure.
+        Returns the (optionally transformed) scalar, or None if the case
+        failed or the objective function returned None.
         """
         if case.success is False:
             logging.warning("Case has been marked as failed: not evaluating objective")
             return None
 
         if self.objective_function_kwargs:
-            out = self.objective_function(case, **self.objective_function_kwargs)
+            raw = self.objective_function(case, **self.objective_function_kwargs)
         else:
-            out = self.objective_function(case)
+            raw = self.objective_function(case)
 
-        if out is None:
-            # Failures are not stored in the objective
+        if raw is None:
             logging.warning(f"Objective function returned a None for {case}")
             logging.warning("Marking case as failed and not storing output!")
             case.mark_failed()
             return None
 
+        value = self.static_transform(raw) if self.static_transform else raw
+        value = coerce_objective_scalar(value, label=f"Objective '{self.name}' output")
+
         if save_value:
-            self._objective_output_data[case] = out
+            self._values[case] = value
 
-        return out
-
-    def data_for_case(self, case: Case, post_processed: bool = True) -> Any:
-        """Reads objective output for a Case, either from before or after
-        the post-processing step.
-
-        WARN: This function does _not_ re-apply the post-processing step.
-
-        Args:
-            case (Case): _description_
-            post_processed (bool, optional): _description_. Defaults to False.
-
-        Returns:
-            Any: Objective output, None if not found.
-        """
-        if post_processed:
-            return self._post_processed_data.get(case, None)
-
-        return self._objective_output_data.get(case, None)
+        return value
 
     def batch_evaluate(
-        self, cases: list[Case], save_values: bool = False
-    ) -> list[Optional[Any]]:
-        # Evaluate for each case
+        self, cases: list[Case], save_values: bool = True
+    ) -> list[Optional[float]]:
         return [self.evaluate(case=case, save_value=save_values) for case in cases]
 
-    def batch_post_process(
-        self, cases: list[Case], outputs: list[Any], save_values: bool = True
-    ) -> list[float]:
-        out_d = self.execute_post_processing_steps(
-            cases=cases, outputs=outputs, save_output=save_values
+    def data_for_case(self, case: Case) -> Optional[float]:
+        """Return the cached evaluated value for a case, or None if not seen."""
+        return self._values.get(case)
+
+    def metric_values_for_case(self, case: Case) -> dict[str, float]:
+        """Return {metric_name: value} contributed by this objective for `case`.
+
+        Used by the backend to build `raw_data` for `tell()`. An empty dict
+        signals "no value available" (case failed or not yet evaluated).
+        """
+        v = self.data_for_case(case)
+        return {} if v is None else {self.name: v}
+
+
+class ScalarizedObjective:
+    """A weighted sum of multiple Objectives, optimized as a single scalar.
+
+    Direction is encoded by signed weights: a negative weight flips the
+    contribution of an inner objective relative to the formula. The outer
+    `minimize` flag then says whether to minimize or maximize the resulting
+    sum.
+
+    Example: maximize lift-to-drag ratio
+        lift = Objective(name="lift", minimize=False, ...)
+        drag = Objective(name="drag", minimize=True,  ...)
+        ratio = ScalarizedObjective(
+            name="LiftToDrag", minimize=False,
+            objectives=[lift, drag], weights=[0.7, -0.3],
         )
-        return list(out_d.values())
 
-
-class AggregateObjective:
-    # TODO make this a super of Objective
-    """An AggregateObjective serves as an aggregator for multiple Objectives, in
-    scenarios where the underlying optimizer either supports only one optimization
-    objective, or an otherwise finite number of them.
-
-    This wrapper allows for multiple, typically similar, objectives to be merged
-    into one, scalar value, according to some weighting rules the user specifies.
-
-    The underlying setup is identical to that of an Objective, with the exception
-    of the post-processing steps being applied on a _tuple_ of all Objective
-    outputs this AggregateObjective wraps within itself.
+    With a backend that supports it (e.g. AxBackend), each inner objective
+    becomes its own metric in the surrogate, gets standardized independently,
+    and the weighted sum is computed at the acquisition step. With backends
+    that don't, scalarization happens at the flowboost layer.
     """
 
     def __init__(
@@ -282,232 +132,168 @@ class AggregateObjective:
         name: str,
         minimize: bool,
         objectives: list[Objective],
-        threshold: float,
         weights: Optional[list[float]] = None,
     ) -> None:
-        """Initialize a new, aggregated AggregateObjective.
+        if not objectives:
+            raise ValueError("ScalarizedObjective requires at least one objective")
 
-        Args:
-            objectives (list[Objective]): Objectives to aggregate
-            weights (Optional[list[float]], optional): Optional weights for aggregation step. Defaults to None.
+        for i, obj in enumerate(objectives):
+            if isinstance(obj, ScalarizedObjective):
+                raise TypeError(
+                    f"ScalarizedObjective.objectives[{i}] is itself a "
+                    f"ScalarizedObjective. Nested scalarization is not "
+                    f"supported — flatten into one ScalarizedObjective with "
+                    f"the combined inner objectives and weights."
+                )
+            if not isinstance(obj, Objective):
+                raise TypeError(
+                    f"ScalarizedObjective.objectives[{i}] must be an "
+                    f"Objective, got {type(obj).__name__!r}. Constraints and "
+                    f"other metric types cannot be scalarized."
+                )
 
-        Raises:
-            ValueError: _description_
-        """
+        names = [o.name for o in objectives]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ValueError(
+                f"ScalarizedObjective has duplicate inner objective names: "
+                f"{duplicates}. Each inner metric must be uniquely named — "
+                f"Ax registers each as its own metric on the experiment. "
+                f"(If you intended two distinct terms, give them different "
+                f"names; if you passed the same Objective instance twice, "
+                f"drop the duplicate.)"
+            )
+
+        if any(o.threshold is not None for o in objectives):
+            raise ValueError(
+                "Inner Objective.threshold is not honored when wrapped in a "
+                "ScalarizedObjective: scalarization collapses to a single "
+                "objective so per-metric Pareto thresholds don't apply. Drop "
+                "the threshold or use plain Objectives in MOO mode instead."
+            )
+
         self.name: str = name
         self.minimize: bool = minimize
         self.objectives: list[Objective] = objectives
         self.weights: list[float] = (
-            weights if weights is not None else [1.0] * len(objectives)
+            list(weights) if weights is not None else [1.0] * len(objectives)
         )
-        self.threshold: Optional[float] = threshold
-
-        self._post_processing_steps: list[tuple[Callable, dict[str, Any]]] = []
-
-        # Data storage for each case that gets evaluated by this objective.
-        # Raw outputs may be tuples across objectives, but the final aggregated
-        # values stored for backends are scalar numerics.
-        self._objective_output_data: dict[Case, Any] = {}
-        self._post_processed_data: dict[Case, float] = {}
-
-        if len(self.objectives) == 0:
-            raise ValueError("AggregateObjective requires at least one objective")
 
         if len(self.weights) != len(self.objectives):
             raise ValueError("Length of weights must match number of objectives")
 
-    def attach_post_processing_step(self, step: Callable, **kwargs: dict[str, Any]):
-        """Attach a post-processing step for this AggregateObjective. Post-processing
-        steps are evaluated PRIOR to the aggregation step, operating on a list
-        of tuples, each tuple representing the outputs for one processed Case's
-        AggregateObjective output.
+        for i, w in enumerate(self.weights):
+            if not math.isfinite(w):
+                raise ValueError(
+                    f"ScalarizedObjective weight at index {i} is not finite "
+                    f"({w!r}). Weights must be finite floats — NaN and ±inf "
+                    f"are rejected."
+                )
 
-        The input should thus be list[tuple[Any * len(AggregateObjective.objectives)]]
+        if all(w == 0.0 for w in self.weights):
+            raise ValueError(
+                "ScalarizedObjective has no non-zero weights; the "
+                "scalarization has no signal. Drop the wrapper, or set at "
+                "least one non-zero weight."
+            )
 
-        Args:
-            step (Callable): Post-processing function
+        # Each inner objective declared a direction (minimize or not). The
+        # weight's sign in a scalarization implies a direction too: with
+        # outer minimize=M, a positive weight means "this term's direction
+        # equals M", a negative weight means "opposite of M". Reject when
+        # those disagree — the optimization is internally inconsistent and
+        # Ax would otherwise reject it deep in the surrogate setup. Weight
+        # zero is a direction-less term; warn and skip the direction check
+        # so users can temporarily mute a contribution during tuning.
+        for obj, w in zip(self.objectives, self.weights):
+            if w == 0.0:
+                logging.warning(
+                    f"ScalarizedObjective {self.name!r}: inner objective "
+                    f"{obj.name!r} has weight 0 — its contribution is "
+                    f"disabled. Set a non-zero weight to re-enable."
+                )
+                continue
+            implied_minimize = self.minimize if w > 0 else not self.minimize
+            if obj.minimize != implied_minimize:
+                obj_dir = "minimize" if obj.minimize else "maximize"
+                implied_dir = "minimize" if implied_minimize else "maximize"
+                raise ValueError(
+                    f"Inconsistent direction for inner objective {obj.name!r}: "
+                    f"weight={w:+g} with outer minimize={self.minimize} implies "
+                    f"'{implied_dir}', but the objective declares '{obj_dir}'. "
+                    f"Flip the sign of the weight or the inner objective's "
+                    f"minimize flag."
+                )
+
+        # Threshold is single-objective-mode only (no Pareto front to bound).
+        # Kept as a None attribute so call sites that read it don't break.
+        self.threshold: Optional[float] = None
+
+        self._values: dict[Case, float] = {}
+
+    def evaluate(self, case: Case, save_value: bool = True) -> Optional[float]:
+        """Evaluate every inner objective and return the signed weighted sum.
+
+        Inner evaluation results are cached on each inner Objective (so
+        `inner.data_for_case(case)` works after this call). If any inner
+        returns None, the whole scalarization is None.
         """
-        self._post_processing_steps.append((step, kwargs))
-
-    def evaluate(
-        self, case: Case, save_value: bool = True
-    ) -> Optional[tuple[Any, ...]]:
         if case.success is False:
             logging.warning("Case has been marked as failed: not evaluating objective")
             return None
 
-        objective_outputs = [
+        inner_values = [
             obj.evaluate(case, save_value=save_value) for obj in self.objectives
         ]
-
-        if any(output is None for output in objective_outputs):
+        if any(v is None for v in inner_values):
             return None
 
-        output_tuple = tuple(objective_outputs)
-        if save_value:
-            self._objective_output_data[case] = list(output_tuple)
-
-        return output_tuple
-
-    def _evaluate_batch(
-        self, cases: list[Case], save_values: bool = False
-    ) -> list[Optional[tuple[Any, ...]]]:
-        all_outputs = [self.evaluate(case, save_value=save_values) for case in cases]
-        return all_outputs
-
-    def batch_evaluate(
-        self, cases: list[Case], save_values: bool = False
-    ) -> list[Optional[tuple[Any, ...]]]:
-        return self._evaluate_batch(cases, save_values=save_values)
-
-    def apply_batch_post_processing(self, all_outputs: list[tuple]) -> list[tuple]:
-        # Apply post-processing steps suitable for batch-level processing
-        # Example: normalization across each element of the tuples
-        expected_count = len(all_outputs)
-        for step, kwargs in self._post_processing_steps:
-            try:
-                transformed_columns = []
-                for output in zip(*all_outputs):
-                    transformed = step(output, **kwargs)
-                    try:
-                        transformed_count = len(transformed)
-                    except TypeError as e:
-                        raise ValueError(
-                            f"Post-processing step {step} must return a sized collection: {e}"
-                        )
-
-                    if transformed_count != expected_count:
-                        raise ValueError(
-                            f"Post-processing step {step} changed output cardinality: "
-                            f"expected {expected_count}, got {transformed_count}"
-                        )
-
-                    transformed_columns.append(list(transformed))
-
-                # Transpose back if needed
-                all_outputs = [tuple(row) for row in zip(*transformed_columns)]
-            except Exception as e:
-                raise ValueError(
-                    f"Error applying batch post-processing step {step}: {e}"
-                )
-        return all_outputs
-
-    def aggregate_outputs(self, processed_outputs: list[tuple]) -> list[float]:
-        """Aggregate the post-processed tuple outputs into scalar values."""
-        aggregated_values = [
-            sum(
-                float(output * weight)
-                for output, weight in zip(obj_outputs, self.weights)
-            )
-            for obj_outputs in processed_outputs
-        ]
-        return aggregated_values
-
-    def batch_post_process(
-        self,
-        cases: list[Case],
-        outputs: list[tuple[Any, ...]],
-        save_values: bool = True,
-    ) -> list[float]:
-        if len(outputs) != len(cases):
-            raise ValueError(
-                f"Case count != output count: cases={cases}, outputs={outputs}"
-            )
-
-        if not outputs:
-            return []
-
-        processed_outputs = self.apply_batch_post_processing(outputs)
-        aggregated_outputs = [
-            coerce_objective_scalar(
-                out,
-                label=f"Post-processed aggregate objective '{self.name}' output",
-            )
-            for out in self.aggregate_outputs(processed_outputs)
-        ]
-
-        if save_values:
-            self._post_processed_data = {
-                case: out for case, out in zip(cases, aggregated_outputs)
-            }
-
-        return aggregated_outputs
-
-    def batch_process(self, cases: list[Case], save_values: bool = True) -> list[float]:
-        all_outputs = self.batch_evaluate(cases, save_values=save_values)
-        successful = [
-            (case, output)
-            for case, output in zip(cases, all_outputs)
-            if case.success is not False and output is not None
-        ]
-
-        if not successful:
-            return []
-
-        successful_cases = [case for case, _ in successful]
-        successful_outputs = [output for _, output in successful]
-        return self.batch_post_process(
-            successful_cases, successful_outputs, save_values=save_values
+        scalar = sum(w * v for w, v in zip(self.weights, inner_values))
+        scalar = coerce_objective_scalar(
+            scalar, label=f"ScalarizedObjective '{self.name}' output"
         )
 
-    def data_for_case(self, case: Case, post_processed: bool = True):
-        if post_processed:
-            return self._post_processed_data.get(case, None)
+        if save_value:
+            self._values[case] = scalar
 
-        return self._objective_output_data.get(case, None)
+        return scalar
+
+    def batch_evaluate(
+        self, cases: list[Case], save_values: bool = True
+    ) -> list[Optional[float]]:
+        return [self.evaluate(case=case, save_value=save_values) for case in cases]
+
+    def data_for_case(self, case: Case) -> Optional[float]:
+        """Return the cached scalarized value for a case."""
+        return self._values.get(case)
+
+    def metric_values_for_case(self, case: Case) -> dict[str, float]:
+        """Return {inner_metric_name: value} for each inner objective.
+
+        These are the per-metric values backends with native scalarization
+        (e.g. Ax) expect — Ax does the weighted sum itself at the acquisition
+        step.
+        """
+        out: dict[str, float] = {}
+        for obj in self.objectives:
+            v = obj.data_for_case(case)
+            if v is None:
+                return {}
+            out[obj.name] = v
+        return out
 
 
 def objective_func_output(
     case: Case,
-    objective: Objective,
-    post_processed: bool = False,
+    objective: Union[Objective, "ScalarizedObjective"],
     re_evaluate: bool = False,
-):
-    """Get the objective function (Objective) output for this case. The
-    default setting, `post_processed=False`, returns the raw objective
-    output, prior to any post-processing steps such as normalization.
+) -> Optional[float]:
+    """Read the cached output of `objective` for `case`.
 
-    WARN: re-evaluating the data with post_processed=True can be extremely
-    slow, depending on your post-processing flow. This typically entails
-    evaluating the objective function for all cases.
-
-    Args:
-        objective (Objective): _description_
-        post_processed (bool, optional): _description_. Defaults to False.
-        re_evaluate (bool, optional): _description_. Defaults to False.
-
-    Returns:
-        _type_: _description_
+    For ScalarizedObjective this returns the scalarized value. To inspect
+    individual inner contributions, iterate `objective.objectives` and call
+    `inner.data_for_case(case)` on each.
     """
-    if isinstance(objective, AggregateObjective):
-        raise NotImplementedError(
-            "Cannot evaluate AggregateObjectives through Case methods"
-        )
-
-    if re_evaluate and post_processed:
-        # TODO: objective has all data, so just re-run postproc step?
-        raise NotImplementedError(
-            "Cannot re-evaluate while accessing post-processed data"
-        )
-
     if re_evaluate:
         objective.evaluate(case)
-
-    return objective.data_for_case(case, post_processed=post_processed)
-
-
-class ScikitNormalizationStep:
-    """
-    Class serves as a very simple wrapper around Scikit's normalization
-    functions that can be directly dropped into the objective's post-processing
-    steps.
-    """
-
-    def __init__(self, scikit_normalizer) -> None:
-        if not hasattr(scikit_normalizer, "fit_transform"):
-            raise ValueError("Normalizer does not have fit_transform method")
-        self.normalizer = scikit_normalizer
-
-    def evaluate(self, input: list) -> list:
-        normalized = self.normalizer.fit_transform(np.array(input).reshape(-1, 1))
-        return normalized.reshape(-1).tolist()
+    return objective.data_for_case(case)

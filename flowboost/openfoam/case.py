@@ -22,7 +22,7 @@ from flowboost.optimizer.search_space import Dimension
 
 if TYPE_CHECKING:
     # Lazy imports for function argument typing
-    from flowboost.optimizer.objectives import AggregateObjective, Objective
+    from flowboost.optimizer.objectives import Objective, ScalarizedObjective
 
 DEFAULT_METADATA: str = "metadata.toml"
 GENERATION_INDEX_SORT_SENTINEL: str = "99999.99"
@@ -462,32 +462,30 @@ class Case:
         return entry.value
 
     def objective_function_outputs(
-        self, objectives: list[Union["Objective", "AggregateObjective"]]
+        self, objectives: list[Union["Objective", "ScalarizedObjective"]]
     ) -> dict[str, float]:
-        """Get the post-processed objective function outputs for this case.
+        """Return {metric_name: value} for every metric this case contributes.
 
-        Args:
-            objectives (list[&#39;Objective&#39;, &#39;AggregateObjective&#39;])
-
-        Returns:
-            dict[str, float]: Mapping of objective name to scalar output value
+        For a plain Objective the metric name is the objective's own name. For
+        a ScalarizedObjective each inner objective contributes its own metric
+        — Ax expects per-metric raw_data and does the scalarization itself.
         """
         output_mapping: dict[str, float] = {}
 
         for obj in objectives:
-            out = obj.data_for_case(self, post_processed=True)
-            if out is None:
+            metric_values = obj.metric_values_for_case(self)
+            if not metric_values:
                 raise ValueError(
-                    f"Objective '{obj.name}' has no post-processed output for "
-                    f"case {self}. The case has not been evaluated yet — run "
+                    f"Objective '{obj.name}' has no value for case {self}. The "
+                    f"case has not been evaluated yet — run "
                     f"Backend.batch_process([case]) first, or fetch finished "
                     f"cases via Session.get_finished_cases(batch_process=True)."
                 )
-
-            output_mapping[obj.name] = coerce_objective_scalar(
-                out,
-                label=f"Post-processed objective '{obj.name}' output",
-            )
+            for metric_name, value in metric_values.items():
+                output_mapping[metric_name] = coerce_objective_scalar(
+                    value,
+                    label=f"Objective '{metric_name}' output",
+                )
 
         return output_mapping
 

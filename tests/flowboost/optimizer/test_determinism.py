@@ -12,10 +12,6 @@ The guarantees tested here:
 
 2. **Continuous-vs-replayed**: a single backend kept alive across cycles
    produces the same suggestions as fresh-backend replay.
-
-3. **Normalization stability**: the above guarantees hold when user-side
-   normalization (e.g. MinMaxScaler) is active and the scale shifts as
-   new cases arrive.
 """
 
 import pytest
@@ -69,51 +65,13 @@ def _make_backend(seed: int) -> tuple[AxBackend, Objective]:
     return backend, objective
 
 
-def _make_1d_normalized_backend(seed: int) -> tuple[AxBackend, Objective]:
-    backend = AxBackend()
-    backend.random_seed = seed
-    backend.initialization_trials = 3
-
-    objective = Objective(
-        name="score",
-        minimize=True,
-        objective_function=lambda case: (
-            float(case.read_metadata()["optimizer-suggestion"]["x"]["value"]) ** 2
-        ),
-        normalization_step="min-max",
-    )
-    dims = [
-        Dimension.range(
-            name="x",
-            link=DictionaryLink("constant/setup").entry("x"),
-            lower=-5.0,
-            upper=5.0,
-        ),
-    ]
-    backend.set_search_space(dims)
-    backend.set_objectives([objective])
-    return backend, objective
-
-
-def _make_case(tmp_path, name: str, params: dict[str, float]) -> Case:
-    case_dir = tmp_path / name
-    case_dir.mkdir(parents=True, exist_ok=True)
-    case = Case(case_dir)
-    case.update_metadata(
-        {key: {"value": value} for key, value in params.items()},
-        entry_header="optimizer-suggestion",
-    )
-    return case
-
-
 def _evaluate_and_tell(
     backend: AxBackend,
     objective: Objective,
     cases: list[Case],
 ) -> None:
     """Run batch evaluation and tell the backend about all cases."""
-    outputs = objective.batch_evaluate(cases)
-    objective.batch_post_process(cases, outputs)
+    objective.batch_evaluate(cases)
     backend.tell(cases)
 
 
@@ -121,6 +79,7 @@ def _run_replayed(
     tmp_path,
     prefix: str,
     make_backend_fn,
+    make_case_fn,
     seed: int = SEED,
     n_cycles: int = N_CYCLES,
 ) -> list[dict[str, float]]:
@@ -140,7 +99,7 @@ def _run_replayed(
         params = {dim.name: value for dim, value in suggestion.items()}
         suggestions.append(params)
 
-        case = _make_case(tmp_path, f"{prefix}-{cycle:02d}", params)
+        case = make_case_fn(tmp_path, f"{prefix}-{cycle:02d}", params)
         all_cases.append(case)
         _evaluate_and_tell(backend, objective, all_cases)
 
@@ -151,6 +110,7 @@ def _run_continuous(
     tmp_path,
     prefix: str,
     make_backend_fn,
+    make_case_fn,
     seed: int = SEED,
     n_cycles: int = N_CYCLES,
 ) -> list[dict[str, float]]:
@@ -166,7 +126,7 @@ def _run_continuous(
         params = {dim.name: value for dim, value in suggestion.items()}
         suggestions.append(params)
 
-        case = _make_case(tmp_path, f"{prefix}-{cycle:02d}", params)
+        case = make_case_fn(tmp_path, f"{prefix}-{cycle:02d}", params)
         all_cases.append(case)
         _evaluate_and_tell(backend, objective, all_cases)
 
@@ -193,31 +153,25 @@ def _assert_suggestions_match(
 # ---------------------------------------------------------------------------
 
 
-def test_replay_vs_replay_determinism(tmp_path):
+def test_replay_vs_replay_determinism(tmp_path, make_suggestion_case):
     """Two independent replayed runs with the same seed must produce
     identical suggestions — including the BO phase."""
-    run_a = _run_replayed(tmp_path / "a", "a", _make_backend)
-    run_b = _run_replayed(tmp_path / "b", "b", _make_backend)
+    run_a = _run_replayed(tmp_path / "a", "a", _make_backend, make_suggestion_case)
+    run_b = _run_replayed(tmp_path / "b", "b", _make_backend, make_suggestion_case)
 
     _assert_suggestions_match("run_a", "run_b", run_a, run_b)
 
 
-def test_replay_vs_replay_determinism_with_normalization(tmp_path):
-    """Same guarantee with min-max normalization active. The normalizer
-    re-fits on every batch_post_process call, so the scale shifts as new
-    cases arrive. Both replayed runs must still agree."""
-    run_a = _run_replayed(tmp_path / "a", "a", _make_1d_normalized_backend)
-    run_b = _run_replayed(tmp_path / "b", "b", _make_1d_normalized_backend)
-
-    _assert_suggestions_match("run_a", "run_b", run_a, run_b)
-
-
-def test_continuous_vs_replayed_determinism(tmp_path):
+def test_continuous_vs_replayed_determinism(tmp_path, make_suggestion_case):
     """A single long-lived backend must produce the same suggestions as
     fresh-backend replay. Both paths go through _re_initialize_client on
     every tell(), so the AxClient state at each ask() should be identical."""
-    continuous = _run_continuous(tmp_path / "cont", "cont", _make_backend)
-    replayed = _run_replayed(tmp_path / "replay", "replay", _make_backend)
+    continuous = _run_continuous(
+        tmp_path / "cont", "cont", _make_backend, make_suggestion_case
+    )
+    replayed = _run_replayed(
+        tmp_path / "replay", "replay", _make_backend, make_suggestion_case
+    )
 
     _assert_suggestions_match("continuous", "replayed", continuous, replayed)
 

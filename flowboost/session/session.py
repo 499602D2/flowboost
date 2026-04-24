@@ -849,14 +849,10 @@ class Session:
                 if not metadata:
                     continue
 
-                # Prefer raw value, fall back to processed
-                raw_values = metadata.get("objective-values-raw", {})
                 obj_outputs = metadata.get("objective-outputs", {})
 
                 if objective.name in obj_outputs:
-                    value = raw_values.get(
-                        objective.name, obj_outputs[objective.name].get("value")
-                    )
+                    value = obj_outputs[objective.name].get("value")
                     if value is not None:
                         if objective.minimize:
                             target_reached = value <= self.target_value
@@ -922,18 +918,12 @@ class Session:
             if not metadata:
                 continue
 
-            # Get raw value
-            raw_values = metadata.get("objective-values-raw", {})
-            raw_value = raw_values.get(objective.name)
+            obj_outputs = metadata.get("objective-outputs", {})
+            value = obj_outputs.get(objective.name, {}).get("value")
 
-            if raw_value is not None:
-                # Get processed value for ranking (optimizer uses this)
-                obj_outputs = metadata.get("objective-outputs", {})
-                proc_value = obj_outputs.get(objective.name, {}).get("value", raw_value)
-
-                # Get generation index for submission order
+            if value is not None:
                 gen_index = metadata.get("generation_index", "99999.99")
-                case_scores.append((case, proc_value, raw_value, gen_index))
+                case_scores.append((case, value, gen_index))
 
         if not case_scores:
             print(f"No valid objective values found for '{objective.name}'")
@@ -941,11 +931,10 @@ class Session:
 
         if n is None:
             # Show all in submission order
-            case_scores.sort(key=lambda x: x[3])  # Sort by generation_index
+            case_scores.sort(key=lambda x: x[2])  # Sort by generation_index
             display_cases = case_scores
             header = f"=== All Designs in Submission Order (by '{objective.name}') ==="
         else:
-            # Sort by processed value for proper ranking (reverse if maximizing)
             reverse = not objective.minimize  # Higher is better if maximizing
             case_scores.sort(key=lambda x: x[1], reverse=reverse)
             display_cases = case_scores[: min(n, len(case_scores))]
@@ -970,9 +959,7 @@ class Session:
         )
         print("-" * (COL_RANK + COL_NAME + COL_OBJ * n_obj_cols + COL_PARAMS))
 
-        for rank, (case, proc_value, raw_value, gen_index) in enumerate(
-            display_cases, 1
-        ):
+        for rank, (case, value, gen_index) in enumerate(display_cases, 1):
             metadata = case.read_metadata()
 
             # Get parameter values
@@ -987,14 +974,13 @@ class Session:
                 ]
             params_str = ", ".join(params) if params else "N/A"
 
-            # Primary objective raw value
-            obj_values_str = f"{raw_value:<18.6f}"
+            obj_values_str = f"{value:<18.6f}"
 
-            # Other objectives raw values
+            # Other objectives' values
             if metadata:
-                raw_all = metadata.get("objective-values-raw", {})
+                obj_outputs = metadata.get("objective-outputs", {})
                 for obj in other_objectives:
-                    other_val = raw_all.get(obj.name)
+                    other_val = obj_outputs.get(obj.name, {}).get("value")
                     if other_val is not None:
                         obj_values_str += f"{other_val:<18.6f}"
                     else:
@@ -1036,13 +1022,12 @@ class Session:
                 for k, v in metadata["optimizer-suggestion"].items():
                     params[k] = v.get("value")
 
-            # Raw objective values
+            # Objective values
             objectives = {}
-            raw_obj_values = metadata.get("objective-values-raw", {})
             if "objective-outputs" in metadata:
                 for obj_name, obj_data in metadata["objective-outputs"].items():
                     objectives[obj_name] = {
-                        "value": raw_obj_values.get(obj_name, obj_data.get("value")),
+                        "value": obj_data.get("value"),
                         "minimize": obj_data.get("minimize"),
                     }
 

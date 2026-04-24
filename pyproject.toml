@@ -36,7 +36,6 @@ dependencies = [
     "polars>=1.11",
     "psutil>=5.9",
     "pyarrow>=15",
-    "scikit-learn>=1.4",
     "tomlkit>=0.12",
 ]
 

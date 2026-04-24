@@ -1,3 +1,5 @@
+import math
+
 import polars as pl
 
 from flowboost.openfoam.case import Case
@@ -12,16 +14,16 @@ def max_temp_objective(case: Case) -> int:
 
 
 def test_objective_initialization():
-    """Test initialization without changes, as it doesn't involve function execution."""
+    """Construction-only sanity check; no objective_function execution."""
     objective = Objective(
         name="test_objective",
         minimize=True,
         objective_function=max_temp_objective,
-        normalization_step="min-max",
     )
     assert objective.name == "test_objective"
     assert objective.minimize is True
     assert callable(objective.objective_function)
+    assert objective.static_transform is None
 
 
 def test_evaluate_method(test_case):
@@ -32,49 +34,42 @@ def test_evaluate_method(test_case):
     assert result == 1955, f"Result {result} != 1955"
 
 
-def test_normalization_step_addition():
+def test_static_transform_applied(test_case):
+    """A static_transform is applied per evaluation, before caching."""
     objective = Objective(
-        name="test_normalization",
+        name="logged",
         minimize=True,
         objective_function=max_temp_objective,
-        normalization_step="min-max",
+        static_transform=math.log,
     )
-    method = objective._post_processing_steps[0][0]
-    assert method([0, 1, 2]) == [0, 0.5, 1]
+    result = objective.evaluate(test_case)
+    assert result == math.log(1955)
+    assert objective.data_for_case(test_case) == math.log(1955)
 
 
-def test_data_retrieval_post_processing(test_case):
-    """Test if data retrieval and post-processing work as expected"""
+def test_data_retrieval(test_case):
+    """data_for_case returns the cached evaluated value."""
     objective = Objective(
-        name="data_retrieval_test", minimize=True, objective_function=max_temp_objective
+        name="data_retrieval_test",
+        minimize=True,
+        objective_function=max_temp_objective,
     )
-    objective.evaluate(test_case)  # No need to patch; controlled by mock_case
-    out = objective.data_for_case(test_case, post_processed=False)
-    assert out == 1955, f"Out == {out} != 1955"
-
-    objective.attach_post_processing_step(
-        step=lambda x, **kwargs: [val + 1 for val in x]
-    )
-    objective.execute_post_processing_steps([test_case], [out])
-    post_out = objective.data_for_case(test_case, post_processed=True)
-
-    assert post_out == 1955 + 1, f"Post-proc out = {post_out} != 1955+1"
+    objective.evaluate(test_case)
+    assert objective.data_for_case(test_case) == 1955
 
 
-def test_normalization_outputs_python_floats(test_case):
+def test_evaluation_returns_python_floats(test_case):
     objective = Objective(
-        name="normalized_objective",
+        name="float_objective",
         minimize=True,
         objective_function=lambda _: 1.0,
-        normalization_step="min-max",
     )
 
     outputs = objective.batch_evaluate([test_case])
-    post_processed = objective.batch_post_process([test_case], outputs)
-    stored = objective.data_for_case(test_case, post_processed=True)
+    stored = objective.data_for_case(test_case)
     case_outputs = test_case.objective_function_outputs([objective])
 
-    assert post_processed == [0.0]
-    assert type(post_processed[0]) is float
+    assert outputs == [1.0]
+    assert type(outputs[0]) is float
     assert type(stored) is float
-    assert case_outputs == {"normalized_objective": 0.0}
+    assert case_outputs == {"float_objective": 1.0}

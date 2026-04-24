@@ -121,7 +121,6 @@ def _build_multidim_pitzdaily_session(
         name="inlet_pressure",
         minimize=True,
         objective_function=_pressure_drop_objective,
-        normalization_step="min-max",
     )
     session.backend.set_objectives([objective])
 
@@ -153,7 +152,6 @@ def _apply_pitzdaily_backend_config(
         name="inlet_pressure",
         minimize=True,
         objective_function=_pressure_drop_objective,
-        normalization_step="min-max",
     )
     session.backend.set_objectives([objective])
 
@@ -260,8 +258,10 @@ def test_session_loop_optimizer_cycle_with_dockerlocal(docker_foam_runtime, tmp_
 
     first_metadata = archived_first.read_metadata()
     assert first_metadata is not None
-    assert type(float(first_metadata["objective-values-raw"]["inlet_pressure"])) is float
-    assert type(float(first_metadata["objective-outputs"]["inlet_pressure"]["value"])) is float
+    assert (
+        type(float(first_metadata["objective-outputs"]["inlet_pressure"]["value"]))
+        is float
+    )
 
     second_case = second_cases[0]
     assert manager.submit_case(second_case)
@@ -271,7 +271,9 @@ def test_session_loop_optimizer_cycle_with_dockerlocal(docker_foam_runtime, tmp_
     assert manager.move_data_for_job(second_job, second_dest)
     Case(second_dest).post_evaluation_update(second_job.to_dict())
 
-    finished_cases = session.get_finished_cases(include_failed=False, batch_process=True)
+    finished_cases = session.get_finished_cases(
+        include_failed=False, batch_process=True
+    )
     assert len(finished_cases) == 2
     for case in finished_cases:
         outputs = case.objective_function_outputs(session.backend.objectives)
@@ -348,18 +350,17 @@ def _assert_session_invariants(
 
     finished = session.get_finished_cases(include_failed=False, batch_process=True)
     assert len(finished) == expected_on_disk, (
-        f"finished case count drift: expected {expected_on_disk}, "
-        f"got {len(finished)}"
+        f"finished case count drift: expected {expected_on_disk}, got {len(finished)}"
     )
 
     # Objective metadata sanity — finite float for every completed case.
     for case in finished:
         metadata = case.read_metadata() or {}
-        raw_objectives = metadata.get("objective-values-raw", {})
+        obj_outputs = metadata.get("objective-outputs", {})
         for obj in backend.objectives:
-            value = raw_objectives.get(obj.name)
-            assert value is not None, f"no raw objective for {case.name}/{obj.name}"
-            value = float(value)
+            entry = obj_outputs.get(obj.name)
+            assert entry is not None, f"no objective output for {case.name}/{obj.name}"
+            value = float(entry["value"])
             assert math.isfinite(value), (
                 f"non-finite objective for {case.name}/{obj.name}: {value}"
             )
@@ -374,9 +375,7 @@ def _assert_session_invariants(
     # pending Ax-generated trial for the next suggestion, which has its own
     # auto-generated arm name and isn't in our mapping.
     completed_trials = [
-        t
-        for t in backend.client.experiment.trials.values()
-        if t.status.is_completed
+        t for t in backend.client.experiment.trials.values() if t.status.is_completed
     ]
     assert len(completed_trials) == expected_told, (
         f"completed trial count drift: expected {expected_told}, "
@@ -487,13 +486,13 @@ def test_session_docker_soak_reload_with_pending_case(docker_foam_runtime, tmp_p
     generated = session_a.loop_optimizer_once(num_new_cases=1)
     assert len(generated) == 1
     pending_name = generated[0].name
-    pending_params = generated[0].parametrize_configuration(session_a.backend.dimensions)
+    pending_params = generated[0].parametrize_configuration(
+        session_a.backend.dimensions
+    )
 
     del session_a
 
-    session_b = _restore_pitzdaily_session(
-        tmp_path / "session_data", max_evaluations=3
-    )
+    session_b = _restore_pitzdaily_session(tmp_path / "session_data", max_evaluations=3)
     session_b.backend.initialize()
 
     pending = session_b.get_pending_cases()
@@ -541,18 +540,23 @@ def test_session_docker_soak_routes_failed_case_and_continues(
 
     # Objective always returns None — the failure path regardless of what
     # the simulation actually produced.
-    session.backend.set_objectives([
-        Objective(
-            name="inlet_pressure",
-            minimize=True,
-            objective_function=lambda _case: None,
-            normalization_step="min-max",
-        )
-    ])
+    session.backend.set_objectives(
+        [
+            Objective(
+                name="inlet_pressure",
+                minimize=True,
+                objective_function=lambda _case: None,
+            )
+        ]
+    )
     inlet_k = Dictionary.link("0/k").entry("boundaryField/inlet/value")
-    session.backend.set_search_space([
-        Dimension.range(name="inlet_k", link=inlet_k, lower=0.1, upper=1.5, log_scale=True)
-    ])
+    session.backend.set_search_space(
+        [
+            Dimension.range(
+                name="inlet_k", link=inlet_k, lower=0.1, upper=1.5, log_scale=True
+            )
+        ]
+    )
     session.job_manager = Manager.create(
         scheduler="dockerlocal", wdir=session.data_dir, job_limit=1
     )
@@ -635,7 +639,9 @@ def test_session_docker_soak_survives_mid_run_reload(docker_foam_runtime, tmp_pa
     del session_a
 
     # --- Second session: rebuild from the same data_dir ---
-    session_b = _restore_pitzdaily_session(tmp_path / "session_data", max_evaluations=total)
+    session_b = _restore_pitzdaily_session(
+        tmp_path / "session_data", max_evaluations=total
+    )
     session_b.backend.initialize()
 
     # Rehydrated session must see the prior finished cases from disk.
