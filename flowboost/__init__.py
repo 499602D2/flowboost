@@ -3,6 +3,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from flowboost.manager.manager import Manager as Manager
     from flowboost.openfoam.case import Case as Case
+    from flowboost.openfoam.data import PandasData as PandasData
+    from flowboost.openfoam.data import PolarsData as PolarsData
     from flowboost.openfoam.dictionary import Dictionary as Dictionary
     from flowboost.openfoam.runtime import get_runtime as foam_runtime
     from flowboost.optimizer.objectives import (
@@ -16,6 +18,8 @@ if TYPE_CHECKING:
 def __getattr__(name):
     _imports = {
         "Case": "flowboost.openfoam.case",
+        "PandasData": "flowboost.openfoam.data",
+        "PolarsData": "flowboost.openfoam.data",
         "Dictionary": "flowboost.openfoam.dictionary",
         "Dimension": "flowboost.optimizer.search_space",
         "Objective": "flowboost.optimizer.objectives",
@@ -44,6 +48,8 @@ __all__ = [
     "Dimension",
     "Manager",
     "Objective",
+    "PandasData",
+    "PolarsData",
     "Session",
     "foam_runtime",
 ]

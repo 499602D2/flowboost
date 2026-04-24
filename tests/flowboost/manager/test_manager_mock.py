@@ -26,7 +26,12 @@ class MockManager(Manager):
     def _cancel_job(self, job_id: str) -> bool:
         return True
 
-    def submit_case(self, case: Case, script_args: dict = {}) -> bool:
+    def submit_case(
+        self,
+        case: Case,
+        script_args: dict[str, Any] = {},
+        script_name: str | None = None,
+    ) -> bool:
         return True
 
     def cancel_job(self, job: JobV2) -> bool:
@@ -115,3 +120,65 @@ def test_status_print(manager: Manager):
     assert job_running.id in status_output
     assert job_finished.id in status_output
     logging.info("Manager status print:\n" + status_output)
+
+
+def test_monitoring_waits_for_acquisition_without_case_jobs(
+    manager: Manager, monkeypatch
+):
+    manager.monitoring_interval = 0
+    acquisition_job = JobV2(
+        id="acq-1",
+        name="acquisition_job",
+        wdir=manager.wdir,
+    )
+    manager.acquisition_job = acquisition_job
+    manager._save_state()
+
+    statuses = iter([False, True])
+    monkeypatch.setattr(manager, "_job_has_finished", lambda _: next(statuses))
+    monkeypatch.setattr("flowboost.manager.manager.time.sleep", lambda _: None)
+
+    free_slots, finished, was_acquisition = manager.do_monitoring()
+
+    assert free_slots == 0
+    assert was_acquisition is True
+    assert finished == [acquisition_job]
+    assert manager.acquisition_job is None
+
+    with open(Path(manager.wdir, manager.persistence_fname), "r") as state_file:
+        state = json.load(state_file)
+    assert state["acquisition_job"] is None
+
+
+def test_monitoring_keeps_finished_jobs_tracked_until_finalized(manager: Manager):
+    finished_job = JobV2(
+        id="125",
+        name="finished_job",
+        wdir=Path("/tmp"),
+    )
+    manager.job_pool.add(finished_job)
+    manager.monitoring_interval = 0
+
+    free_slots, finished, was_acquisition = manager.do_monitoring()
+
+    assert was_acquisition is False
+    assert finished == [finished_job]
+    assert free_slots == manager.job_limit
+    assert finished_job in manager.job_pool
+
+
+def test_finalize_job_removes_finished_job_and_persists(manager: Manager):
+    finished_job = JobV2(
+        id="125",
+        name="finished_job",
+        wdir=Path("/tmp"),
+    )
+    manager.job_pool.add(finished_job)
+    manager._save_state()
+
+    assert manager.finalize_job(finished_job) is True
+    assert finished_job not in manager.job_pool
+
+    with open(Path(manager.wdir, manager.persistence_fname), "r") as state_file:
+        state = json.load(state_file)
+    assert state["job_pool"] == []

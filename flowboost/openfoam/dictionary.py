@@ -2,6 +2,7 @@ import json
 import logging
 from functools import total_ordering
 from pathlib import Path
+import re
 from typing import Any, Optional, Union
 
 from flowboost.openfoam.interface import run_foam_command
@@ -79,7 +80,7 @@ class DictionaryReader(Dictionary):
     `dictionary/readme.md`.
     """
 
-    def __init__(self, path):
+    def __init__(self, path: str | Path):
         super().__init__(path)
         self._keywords: Optional[list[Entry]] = None
 
@@ -140,50 +141,15 @@ class DictionaryReader(Dictionary):
         """
         return self.set(entry=entry, new_value=new_value)
 
+    def require_entry(self, entry: str) -> "Entry":
+        """Return *entry* or raise if it does not exist."""
+        found = self.entry(entry)
+        if found is None:
+            raise ValueError(f"No such entry in {self}: {entry}")
+        return found
+
     def add(self, entry_path: str, value: Any) -> Optional["Entry"]:
         """Adds a new entry to the dictionary at the specified path with the given value."""
-        # Split the entry path to find or create the necessary Entry objects
-        path_parts = entry_path.split("/")
-        current_parent = None
-        current_path = []
-
-        for part in path_parts[:-1]:  # Exclude the last part for now
-            current_path.append(part)
-            found_entry = self.entry("/".join(current_path))
-            if found_entry is None:  # If the entry does not exist, create a placeholder
-                found_entry = Entry(self, key=part, parent=current_parent)
-
-                if current_parent is None:
-                    if self._keywords is None:
-                        self._keywords = []
-
-                    self._keywords.append(found_entry)
-                else:
-                    if current_parent.keywords is None:
-                        current_parent.keywords = []
-
-                    current_parent.keywords.append(found_entry)
-                current_parent = found_entry
-            current_parent = found_entry
-
-        # Now handle the actual entry to add
-        new_entry_key = path_parts[-1]
-        new_entry = Entry(self, key=new_entry_key, parent=current_parent)
-
-        if current_parent:
-            print(f"Adding key={new_entry_key}, parent={current_parent.print_path()}")
-        else:
-            print(f"Adding key={new_entry_key}, parent=None")
-
-        if current_parent and current_parent.keywords:
-            current_parent.keywords.append(new_entry)
-        else:
-            if self._keywords is None:
-                self._keywords = []
-
-            self._keywords.append(new_entry)
-
-        # Execute the CLI command to add the entry with the specified value
         foam_value = FOAMType.to_FOAM(value)
         cmd = ["foamDictionary", self.path, "-entry", entry_path, "-add", foam_value]
         result = run_foam_command(cmd)
@@ -191,10 +157,19 @@ class DictionaryReader(Dictionary):
             logging.error(f"Error adding new entry '{entry_path}': {result.stderr}")
             return None
 
+        # Re-discover from disk instead of trying to update a potentially stale
+        # in-memory tree by hand.
+        self._keywords = None
+        new_entry = self.entry(entry_path)
+
+        if new_entry is None:
+            logging.error(
+                f"Entry '{entry_path}' was added but could not be re-discovered"
+            )
+            return None
+
         new_entry._value = value
         new_entry._raw_value = foam_value
-        print(new_entry)
-
         return new_entry
 
     def delete(self, entry_path: str) -> bool:
@@ -296,7 +271,7 @@ class DictionaryLink:
 
     def reader(
         self, case_path: str | Path
-    ) -> Optional[Union[DictionaryReader, "Entry"]]:
+    ) -> Optional[Union[DictionaryReader, "Entry", Any]]:
         """
         Convert this link into a DictionaryReader that resolves the linked entry path
         within the context of a given case directory.
@@ -305,10 +280,23 @@ class DictionaryLink:
         reader = DictionaryReader(full_path)
 
         if self.entry_path:
-            # If there's an entry path, resolve it to an Entry object
-            return reader.entry(self.entry_path)
+            resolved_entry_path, index = self._split_index_suffix(self.entry_path)
+            entry = reader.entry(resolved_entry_path)
+            if entry is None:
+                return None
+            if index is not None:
+                return entry.index(index)
+            return entry
 
         return reader
+
+    @staticmethod
+    def _split_index_suffix(entry_path: str) -> tuple[str, Optional[int]]:
+        match = re.fullmatch(r"(.+)\[(\d+)\]", entry_path)
+        if not match:
+            return entry_path, None
+
+        return match.group(1), int(match.group(2))
 
     def __str__(self):
         """
@@ -418,6 +406,15 @@ class Entry:
 
         return None
 
+    def require_entry(self, entry_path: str) -> "Entry":
+        """Return *entry_path* or raise if it does not exist."""
+        found = self.entry(entry_path)
+        if found is None:
+            raise ValueError(
+                f"No such sub-entry in '{self.print_path()}' for path '{entry_path}'"
+            )
+        return found
+
     def set(
         self, new_value: Any, override: bool = False, write_dimensioned: bool = False
     ) -> bool:
@@ -437,15 +434,17 @@ class Entry:
         Returns:
             bool: True on success, False on failure.
         """
-        if self.terminating is False and not override:
-            # For non-terminating entries without override, enforce dictionary type for new_value
-            if not isinstance(new_value, dict):
-                logging.error(
-                    f"Non-terminating entry '{self.print_path()}' requires a dictionary value or override flag."
-                )
-                return False
+        if isinstance(new_value, dict):
+            raise NotImplementedError(
+                "Dictionary-valued entry writes are not implemented. "
+                "Set sub-entries individually instead."
+            )
 
-            # Additional logic for setting dictionary values: TODO
+        if self.terminating is False and not override:
+            logging.error(
+                f"Non-terminating entry '{self.print_path()}' requires override=True."
+            )
+            return False
 
         if write_dimensioned and not isinstance(new_value, str):
             raise ValueError(
@@ -455,7 +454,7 @@ class Entry:
         if write_dimensioned and isinstance(new_value, str):
             # New value is an entire dimensioned entry: infer name, value, dimension
             new_raw_val = new_value
-            self._name, new_value, self._dimension = FOAMType.parse(new_raw_val)
+            parsed_name, parsed_dimension, parsed_value = FOAMType.parse(new_raw_val)
         else:
             # Only a value is being written
             foam_value = FOAMType.to_FOAM(new_value)
@@ -494,7 +493,12 @@ class Entry:
 
         # Assuming success, update the local cached value
         self._raw_value = new_raw_val  # Store the new raw value as string
-        self._value = new_value  # Keep Pythonic value
+        if write_dimensioned and isinstance(new_value, str):
+            self._name = parsed_name
+            self._dimension = parsed_dimension
+            self._value = parsed_value
+        else:
+            self._value = new_value  # Keep Pythonic value
 
         return True
 
@@ -509,7 +513,7 @@ class Entry:
         """
         return self.set(new_value=new_value, override=override)
 
-    def add(self, entry_path: str, value: Any) -> bool:
+    def add(self, entry_path: str, value: Any) -> Optional["Entry"]:
         """Adds a new sub-entry relative to this entry with the given value."""
         rel_path = self.print_path()
 
@@ -518,8 +522,10 @@ class Entry:
         else:
             full_path = entry_path
 
-        # return self.dictionary.add(full_path, value)
-        return self.add(full_path, value)
+        if not isinstance(self.dictionary, DictionaryReader):
+            raise TypeError("Entry.add() requires a DictionaryReader-backed entry")
+
+        return self.dictionary.add(full_path, value)
 
     def delete(self) -> bool:
         """Deletes this entry from the dictionary."""

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
+import torch
 from ax.core.arm import Arm
 from ax.core.base_trial import BaseTrial
 from ax.exceptions.core import DataRequiredError
@@ -144,7 +145,7 @@ class AxBackend(Backend):
         # Ensure all files exist
         for p in (model_snapshot, data_snapshot):
             if not p.exists():
-                raise FileNotFoundError(f"File not found [{model_snapshot}]")
+                raise FileNotFoundError(f"File not found [{p}]")
 
         # Restore backend
         logging.info("Restoring Ax backend from state snapshot")
@@ -182,7 +183,7 @@ class AxBackend(Backend):
                 for obj_name, outcome in data_dict["objectives"].items()
             }
 
-            ax.client.complete_trial(trial_index=idx, raw_data=raw_data)  # type: ignore
+            ax.client.complete_trial(trial_index=idx, raw_data=raw_data)
 
         # Attach pending trials to backend
         logging.info("Attaching pending trials")
@@ -192,7 +193,12 @@ class AxBackend(Backend):
                 case_name=case_name,
             )
 
-        # Run acquisition
+        # Run acquisition.  Note: unlike `_ask()`, we do NOT seed torch
+        # here.  The restored backend has no access to the user's
+        # `random_seed` (it is not part of the Ax JSON snapshot), and
+        # offloaded acquisition runs in a separate process on a cluster
+        # node where the global torch state is inherently uncontrolled.
+        # Determinism across offloaded runs is not guaranteed.
         logging.info("Data loaded: running model update + acquisition")
         new_parametrizations, finished = ax.client.get_next_trials(
             max_trials=num_trials
@@ -340,6 +346,16 @@ class AxBackend(Backend):
         return self.ask(max_cases=max_cases)
 
     def _ask(self, max_cases: int) -> dict[int, TParameterization]:
+        # Ax's `random_seed` only controls the Sobol engine; the BO
+        # acquisition optimizer's random restarts consume from the global
+        # PyTorch RNG, which makes results non-deterministic across
+        # separate replay sessions.  Seeding torch here with a value
+        # derived from `random_seed` and the current trial count makes
+        # BO suggestions reproducible given the same experiment state.
+        if self.random_seed is not None:
+            n_trials = len(self.client.experiment.trials)
+            torch.manual_seed(self.random_seed + n_trials)
+
         try:
             new_parametrizations, finished = self.client.get_next_trials(
                 max_trials=max_cases
@@ -429,7 +445,7 @@ class AxBackend(Backend):
         return prediction
 
     def _post_process_suggestion_parametrizations(
-        self, parametrizations: dict[int, TParameterization]
+        self, parametrizations: dict[int, dict[str, Any]]
     ) -> list[dict[Dimension, Any]]:
         """
         Converts the list of string-keyed dictionaries, mapping search space
@@ -443,11 +459,11 @@ class AxBackend(Backend):
             list[dict[Dimension, Any]]: Dimension-keyed list of \
                 parametrizations.
         """
-        processed = []
+        processed: list[dict[Dimension, Any]] = []
 
         # For each parametrization, convert the str-keys to be Dimensions
         for trial_index, parametrization in parametrizations.items():
-            new_suggestion = {}
+            new_suggestion: dict[Dimension, Any] = {}
             for str_key, val in parametrization.items():
                 dim = self._dim_name_to_dimension(str_key)
                 new_suggestion[dim] = val
@@ -470,20 +486,29 @@ class AxBackend(Backend):
                 parametrizations for each case. Parametrizations are dicts, \
                 mapping all search space dimension names to a value.
         """
+        attached = 0
+        skipped = 0
         for case in cases:
             if case in self._trial_index_case_mapping:
-                logging.info(f"Case already attached in _ensure_attached, {case}")
+                logging.debug(f"Case already attached, skipping: {case}")
+                skipped += 1
                 continue
 
             # Generate parametrizations: these describe the search space for Ax.
             # Type coercion is handled by Case.parametrize_configuration().
             p = case.parametrize_configuration(self.dimensions)
 
-            logging.info(f"Attaching c={case.name}, p={p}")
+            logging.debug(f"Attaching c={case.name}, p={p}")
             idx = self._attach_trial_with_case_name(parameters=p, case_name=case.name)
 
             # TODO if we were to run in stateful mode, we'd stash the index
             self._trial_index_case_mapping[case] = idx
+            attached += 1
+
+        if attached or skipped:
+            logging.info(
+                f"Attached {attached} trial(s), skipped {skipped} already-attached"
+            )
 
     def _attach_trial_with_case_name(
         self, parameters: TParameterization, case_name: str
@@ -558,11 +583,11 @@ class AxBackend(Backend):
 
             self.client.complete_trial(
                 trial_index=self._trial_index_case_mapping[case],
-                raw_data=raw_data,  # type: ignore
+                raw_data=raw_data,
             )
 
-    def _get_ax_objectives(self):
-        ax_objectives = {}
+    def _get_ax_objectives(self) -> dict[str, ObjectiveProperties]:
+        ax_objectives: dict[str, ObjectiveProperties] = {}
         for objective in self.objectives:
             ax_objectives[objective.name] = ObjectiveProperties(
                 minimize=objective.minimize, threshold=objective.threshold
@@ -570,8 +595,12 @@ class AxBackend(Backend):
 
         return ax_objectives
 
-    def _dim_to_Ax_parameter_dict(self, dim: Dimension):
-        d = {"name": dim.name, "type": dim.type, "value_type": dim.value_type}
+    def _dim_to_Ax_parameter_dict(self, dim: Dimension) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "name": dim.name,
+            "type": dim.type,
+            "value_type": dim.value_type,
+        }
 
         match dim.type:
             case "range":

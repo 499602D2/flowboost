@@ -19,6 +19,8 @@ class Backend(ABC):
         self.objectives: list[Union[Objective, AggregateObjective]] = []
         self.dimensions: list[Dimension] = []
         self.offload_acquisition: bool = False
+        self.random_seed: int | None = None
+        self.initialization_trials: int | None = None
         self._initialized: bool = False
 
     def _ensure_initialized(self, op: str) -> None:
@@ -92,7 +94,7 @@ class Backend(ABC):
 
     @abstractmethod
     def _post_process_suggestion_parametrizations(
-        self, parametrizations: Any
+        self, parametrizations: dict[int, dict[str, Any]]
     ) -> list[dict[Dimension, Any]]:
         """
         Post-process the result of Backend.ask(), returning a list of
@@ -156,9 +158,10 @@ class Backend(ABC):
         # Save a state snapshot
         model_snapshot = self.produce_state_snapshot(save_in)
 
-        # Ensure case names are unique
-        if len(set([c.name for c in finished_cases])) != len(finished_cases):
-            raise ValueError("All case names must be unique: cannot proceed")
+        self._ensure_unique_case_names(
+            [*finished_cases, *pending_cases],
+            context="finished and pending cases",
+        )
 
         # Construct one dictionary, keyed by names (Case isn't serializable)
         serializable = {
@@ -188,6 +191,16 @@ class Backend(ABC):
         )
         return (model_snapshot, data_snapshot)
 
+    @staticmethod
+    def _ensure_unique_case_names(cases: list[Case], *, context: str) -> None:
+        names = [case.name for case in cases]
+        duplicate_names = sorted({name for name in names if names.count(name) > 1})
+        if duplicate_names:
+            duplicates = ", ".join(duplicate_names)
+            raise ValueError(
+                f"Case names must be unique across {context}: {duplicates}"
+            )
+
     @abstractmethod
     def produce_state_snapshot(self, save_in: Path) -> Path:
         pass
@@ -213,7 +226,9 @@ class Backend(ABC):
 
         # Step 2: Ensure that no cases were marked as failed: if they did, remove them
         # Remove None values from all_objective_outputs
-        successful_cases_indices = [i for i, case in enumerate(cases) if case.success]
+        successful_cases_indices = [
+            i for i, case in enumerate(cases) if case.success is not False
+        ]
         all_objective_outputs = [
             [
                 output
@@ -264,15 +279,21 @@ class Backend(ABC):
                 }
 
                 # Raw value (before post-processing)
+                raw_output = raw_outputs[obj_idx][case_idx]
+                if isinstance(objective, AggregateObjective):
+                    raw_output = objective.aggregate_outputs([raw_output])[0]
+
                 raw_objective_results[objective.name] = coerce_objective_scalar(
-                    raw_outputs[obj_idx][case_idx],
+                    raw_output,
                     label=f"Raw objective '{objective.name}' output",
                 )
 
             # Save post-processed values
             case.update_metadata(objective_results, entry_header="objective-outputs")
             # Save raw values
-            case.update_metadata(raw_objective_results, entry_header="objective-values-raw")
+            case.update_metadata(
+                raw_objective_results, entry_header="objective-values-raw"
+            )
             logging.debug(f"Saved objective outputs to metadata for {case.name}")
         return final_outputs
 

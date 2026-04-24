@@ -113,19 +113,19 @@ class FOAMRuntime:
                 f"Dockerfile directory not found at {DOCKERFILE_DIR}"
             )
 
-        logging.info(
-            f"Building Docker image '{self._docker_image}' — this is a "
-            f"one-time operation..."
+        logging.warning(
+            "Docker image '%s' not found — building from %s "
+            "(this may take a few minutes)",
+            self._docker_image,
+            DOCKERFILE_DIR,
         )
         result = subprocess.run(
             ["docker", "build", "-t", self._docker_image, str(DOCKERFILE_DIR)],
-            stderr=PIPE,
-            text=True,
             timeout=600,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to build Docker image: {result.stderr}")
-        logging.info(f"Docker image '{self._docker_image}' built successfully")
+            raise RuntimeError(f"Failed to build Docker image '{self._docker_image}'")
+        logging.info("Docker image '%s' built successfully", self._docker_image)
 
     def is_available(self) -> bool:
         """Check if this runtime can actually execute FOAM commands."""
@@ -135,6 +135,26 @@ class FOAMRuntime:
             # Available if image exists or can be built
             return self._docker_image_available() or DOCKERFILE_DIR.is_dir()
         return False
+
+    def ensure_image(self):
+        """Build the Docker image if it doesn't exist. No-op in native mode.
+
+        Unlike ``ensure_setup``, this does **not** start a container, so it
+        can be called before mounts are configured -- e.g. from a
+        ``pytest_configure`` hook that runs before workers spawn.
+        """
+        if self.mode == FOAMRuntime.Mode.DOCKER:
+            self._ensure_docker_image()
+
+    def ensure_setup(self):
+        """Eagerly prepare the runtime (build image + start container).
+
+        Call from test fixtures (after configuring mounts) so that a
+        missing Docker image surfaces immediately instead of blocking
+        silently on the first FOAM command.
+        """
+        if self.mode == FOAMRuntime.Mode.DOCKER:
+            self._ensure_container()
 
     # ------------------------------------------------------------------
     # Container lifecycle
@@ -235,7 +255,7 @@ class FOAMRuntime:
             )
         self._mounts.append((host_path.resolve(), guest_path))
 
-    def _auto_mount(self, command: list, cwd: Path | None):
+    def _auto_mount(self, command: list[str | Path], cwd: Path | None):
         """Auto-register mounts for host paths not covered by existing mounts.
 
         Collects absolute host paths from command args and cwd, finds their
@@ -325,22 +345,26 @@ class FOAMRuntime:
     # ------------------------------------------------------------------
 
     def run(
-        self, command: list, cwd: Path | None = None
-    ) -> subprocess.CompletedProcess:
+        self, command: list[str | Path], cwd: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
         """Execute a command, routing FOAM commands through Docker if needed."""
-        cmd_name = Path(command[0]).name if command else ""
+        command_args = [str(arg) for arg in command]
+        cmd_name = Path(command_args[0]).name if command_args else ""
 
         if self.mode == FOAMRuntime.Mode.NATIVE or cmd_name not in self.FOAM_COMMANDS:
-            return subprocess.run(command, stdout=PIPE, stderr=PIPE, cwd=cwd, text=True)
+            return subprocess.run(
+                command_args, stdout=PIPE, stderr=PIPE, cwd=cwd, text=True
+            )
 
         return self._docker_exec(command, cwd)
 
     def _docker_exec(
-        self, command: list, cwd: Path | None
-    ) -> subprocess.CompletedProcess:
+        self, command: list[str | Path], cwd: Path | None
+    ) -> subprocess.CompletedProcess[str]:
         self._auto_mount(command, cwd)
         self._ensure_container()
         translated_cmd, translated_cwd = self._translate_command(command, cwd)
+        assert self._container_id is not None
 
         # Build shell command with proper quoting
         shell_cmd = " ".join(shlex.quote(str(c)) for c in translated_cmd)
@@ -378,6 +402,7 @@ class FOAMRuntime:
             return self._cached_foam_tutorials
 
         self._ensure_container()
+        assert self._container_id is not None
         result = subprocess.run(
             [
                 "docker",
@@ -446,7 +471,7 @@ class FOAMRuntime:
         return str(host_path)
 
     def _translate_command(
-        self, command: list, cwd: Path | None
+        self, command: list[str | Path], cwd: Path | None
     ) -> tuple[list[str], str | None]:
         """Translate command args and cwd for container execution."""
         translated_cmd = [str(command[0])]  # command name stays as-is

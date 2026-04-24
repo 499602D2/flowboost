@@ -1,6 +1,6 @@
 import logging
 import math
-from typing import Any, Literal, Optional, Type, Union
+from typing import Any, Optional, Type, Union
 
 from flowboost.openfoam.dictionary import DictionaryLink
 
@@ -15,11 +15,11 @@ class Dimension:
     """A search space dimension linked to an OpenFOAM dictionary entry.
     Create via ``Dimension.range()``, ``Dimension.fixed()``, or ``Dimension.choice()``."""
 
-    def __init__(self, name: str, type: Literal["range", "fixed", "choice"]):
+    def __init__(self, name: str, type: str):
         if " " in name:
             raise ValueError(f"Dimension name cannot contain spaces: '{name}'")
         self.name = name
-        self.type = type
+        self.type: str = type
         self.value_type: Optional[str] = None
         self.is_fidelity: Optional[bool] = None
         self.target_value: Optional[float] = None
@@ -33,7 +33,7 @@ class Dimension:
         # Link to an OpenFOAM dictionary entry
         self.linked_entry: Optional[DictionaryLink] = None
 
-    def link_to(self, dictionary_link: DictionaryLink):
+    def link_to(self, dictionary_link: DictionaryLink) -> None:
         """Links a search space dimension to a corresponding OpenFOAM
         dictionary entry, which gets manipulated during the optimization
 
@@ -103,6 +103,7 @@ class Dimension:
         dim = cls(name, "choice")
         dim.linked_entry = link
         dim.is_ordered = is_ordered
+        cls._validate_choice_values(choices)
 
         # If dtype is provided, ensure all choices match this type, otherwise infer it
         if dtype is None:
@@ -113,6 +114,17 @@ class Dimension:
         dim.value_type = Dimension._get_value_type_str(dtype)
 
         return dim
+
+    @staticmethod
+    def _validate_choice_values(values: list[Any]) -> None:
+        has_bool = any(type(value) is bool for value in values)
+        has_numeric_non_bool = any(
+            isinstance(value, (int, float)) and type(value) is not bool
+            for value in values
+        )
+
+        if has_bool and has_numeric_non_bool:
+            raise ValueError("Cannot mix bool and numeric choice values")
 
     @staticmethod
     def _infer_type(values: list[Any]) -> Type:
@@ -145,8 +157,12 @@ class Dimension:
 
         try:
             if target_type is bool and isinstance(value, str):
-                # Convert strings to bool explicitly (assuming 'True', 'False' strings)
-                return value.lower() in ["true", "1", "t", "y", "yes"]
+                normalized = value.strip().lower()
+                if normalized in Dimension._TRUE_STRINGS:
+                    return True
+                if normalized in Dimension._FALSE_STRINGS:
+                    return False
+                raise ValueError(f"Cannot convert {value!r} to bool.")
             else:
                 return target_type(value)
         except ValueError:
@@ -157,6 +173,8 @@ class Dimension:
     # Used by _get_value_type_str (type→str) and coerce (str→type).
     _TYPE_MAP: dict[type, str] = {int: "int", float: "float", bool: "bool", str: "str"}
     _TYPE_MAP_INV: dict[str, type] = {v: k for k, v in _TYPE_MAP.items()}
+    _TRUE_STRINGS: set[str] = {"true", "1", "t", "y", "yes"}
+    _FALSE_STRINGS: set[str] = {"false", "0", "f", "n", "no"}
 
     @staticmethod
     def _get_value_type_str(value_type: Type) -> str:

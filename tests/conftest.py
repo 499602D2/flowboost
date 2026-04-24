@@ -3,8 +3,25 @@ from pathlib import Path
 import pytest
 
 from flowboost.openfoam.case import Case
-from flowboost.openfoam.interface import FOAM
 from flowboost.openfoam.runtime import FOAMRuntime, get_runtime
+
+
+def pytest_configure(config):
+    """Build the OpenFOAM Docker image before xdist workers start.
+
+    Runs on the controller (or standalone), where stdout goes straight to
+    the terminal so that Docker build progress is visible instead of
+    silently blocking inside a worker process.
+    """
+    if hasattr(config, "workerinput"):
+        return  # inside an xdist worker -- image is already built
+
+    try:
+        runtime = get_runtime()
+    except RuntimeError:
+        return  # OpenFOAM not available; tests that need it will skip
+
+    runtime.ensure_image()
 
 
 @pytest.fixture(scope="session")
@@ -23,7 +40,9 @@ def foam_runtime(tmp_path_factory):
         return
 
     if not runtime.is_available():
-        pytest.skip("OpenFOAM runtime not usable (Docker image missing or cannot be built)")
+        pytest.skip(
+            "OpenFOAM runtime not usable (Docker image missing or cannot be built)"
+        )
         return
 
     if runtime.mode != FOAMRuntime.Mode.NATIVE:
@@ -33,6 +52,10 @@ def foam_runtime(tmp_path_factory):
         # Mount test data dir so foamDictionary can access test case files
         tests_dir = Path(__file__).parent
         runtime.add_mount(tests_dir, "/testdata")
+
+    # Eagerly start the container so a broken runtime surfaces here,
+    # not mid-test as a silent hang.
+    runtime.ensure_setup()
 
     yield runtime
     runtime.cleanup()

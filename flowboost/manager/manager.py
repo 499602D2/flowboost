@@ -3,7 +3,7 @@ import logging
 import shutil
 import time
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -252,6 +252,16 @@ class Manager(ABC):
         logging.info(f"Cancelled job: {job}")
         return success
 
+    def finalize_job(self, job: "JobV2") -> bool:
+        if job not in self.job_pool:
+            logging.error(f"Cannot finalize job: not in job pool ({job})")
+            return False
+
+        self.job_pool.remove(job)
+        self._save_state()
+        logging.info(f"Finalized job: {job}")
+        return True
+
     def do_monitoring(self) -> tuple[int, list["JobV2"], bool]:
         """
         Performs persistent monitoring of the running optimization jobs,
@@ -264,9 +274,6 @@ class Manager(ABC):
             tuple[int, list[Job], bool]: Number of free slots, finished jobs, acquisition job
         """
         while True:
-            if len(self.job_pool) == 0:
-                return (self.job_limit, [], False)
-
             if self.acquisition_job:
                 # Acquisition job is special, during which we do not care what has
                 # finished
@@ -274,22 +281,24 @@ class Manager(ABC):
                     logging.info(f"Acquisition job finished ({self.acquisition_job})")
                     job = self.acquisition_job
                     self.acquisition_job = None
+                    self._save_state()
                     return (0, [job], True)
                 else:
                     logging.info(f"Acquisition still running ({self.acquisition_job})")
                     time.sleep(self.monitoring_interval)
                     continue
 
-            finished_jobs = {
-                job for job in self.job_pool if self._job_has_finished(job.id)
-            }
+            if len(self.job_pool) == 0:
+                return (self.job_limit, [], False)
+
+            finished_jobs = sorted(
+                (job for job in self.job_pool if self._job_has_finished(job.id)),
+                key=lambda job: job.created_at,
+            )
 
             if finished_jobs:
-                self.job_pool.difference_update(finished_jobs)
-                self._save_state()
-
-                free_slots = self.job_limit - len(self.job_pool)
-                return (free_slots, list(finished_jobs), False)
+                free_slots = self.free_slots()
+                return (free_slots, finished_jobs, False)
 
             print(self._status_print())
             logging.info("No jobs finished, monitoring...")
@@ -359,8 +368,8 @@ class Manager(ABC):
 
         return Case(job.wdir)
 
-    def _state(self) -> dict:
-        state = {
+    def _state(self) -> dict[str, Any]:
+        state: dict[str, Any] = {
             "type": self.type,
             "wdir": str(self.wdir),
             "job_limit": self.job_limit,
@@ -371,7 +380,7 @@ class Manager(ABC):
         }
 
         if self.acquisition_job:
-            state["acquisition_job"] = asdict(self.acquisition_job)
+            state["acquisition_job"] = self.acquisition_job.to_dict()
 
         return state
 
@@ -411,7 +420,7 @@ class Manager(ABC):
                 logging.info(f"\t[{i}] {job}")
 
         if state.get("acquisition_job", None):
-            self.acquisition_job = JobV2(**state["acquisition_job"])
+            self.acquisition_job = JobV2.from_dict(state["acquisition_job"])
             logging.info(f"Restored acquisition job: {self.acquisition_job}")
 
         logging.info("Restored job manager")
@@ -419,6 +428,10 @@ class Manager(ABC):
     @classmethod
     def _construct_scipt_args(cls, args: dict, sep: str = ",") -> str:
         return sep.join(f'{k}="{v}"' for k, v in args.items())
+
+    @classmethod
+    def _construct_script_arg_list(cls, args: dict) -> list[str]:
+        return [f'{k}="{v}"' for k, v in args.items()]
 
 
 @dataclass(frozen=True)

@@ -4,19 +4,20 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Union, Literal
+from typing import Any, Literal, Optional, Union
 
 from flowboost.config import config
 from flowboost.manager.manager import JobV2, Manager
 from flowboost.openfoam.case import Case, path_is_foam_dir, unique_id
-from flowboost.openfoam.dictionary import Dictionary, DictionaryLink, DictionaryReader
+from flowboost.openfoam.data import _BACKENDS as _DATA_BACKENDS
+from flowboost.openfoam.dictionary import DictionaryLink, DictionaryReader, Entry
 from flowboost.openfoam.types import FOAMType
 from flowboost.optimizer.acquisition_offload import OFFLOAD_SCRIPT
 from flowboost.optimizer.backend import (
+    Backend,
     DEFAULT_OFFLOAD_RESULT_FNAME,
     OptimizationComplete,
 )
-from flowboost.optimizer.interfaces.Ax import Backend
 from flowboost.optimizer.search_space import Dimension
 
 
@@ -29,7 +30,7 @@ class Session:
         name: str,
         data_dir: Path,
         archival_dir: Optional[Path] = None,
-        dataframe_format: str = "polars",
+        dataframe_format: Literal["pandas", "polars"] = "polars",
         backend: str = "AxBackend",
         clone_method: Literal["foamCloneCase", "copy"] = "foamCloneCase",
         random_seed: Optional[int] = None,
@@ -51,8 +52,13 @@ class Session:
                 basis. Defaults to polars.
             backend (str, optional): Optimization backend to use. Defaults to "Ax".
             clone_method (Literal["foamCloneCase", "copy"], optional): Method to use for cloning cases. Defaults to "foamCloneCase".
-            random_seed (Optional[int], optional): Optional optimizer seed for \
-                reproducible candidate generation. Defaults to None.
+            random_seed (Optional[int], optional): Seed for reproducible \
+                candidate generation. Seeds the Sobol initialization engine \
+                (via Ax) and resets the global PyTorch RNG before each \
+                acquisition call, ensuring deterministic suggestions across \
+                session restarts. Note: this mutates ``torch``'s global RNG \
+                state, which may affect user code that depends on it in the \
+                same process. Defaults to None (non-deterministic).
             max_evaluations (Optional[int], optional): Maximum number of evaluations \
                 before stopping optimization. Defaults to None (no limit).
             target_value (Optional[float], optional): Target objective value to reach. \
@@ -65,7 +71,7 @@ class Session:
         self.pending_dir: Path = Path(self.data_dir, "cases_pending")
         self.archival_dir: Path = Path(data_dir, "cases_completed")
         self.created_at: datetime = datetime.now(tz=timezone.utc)
-        self.dataframe_format: str = dataframe_format
+        self.dataframe_format: Literal["pandas", "polars"] = dataframe_format
         self.clone_method: Literal["foamCloneCase", "copy"] = clone_method
         self.random_seed: Optional[int] = random_seed
 
@@ -137,7 +143,7 @@ class Session:
         cases: list[Case] = []
         for p in filter(Path.is_dir, self.archival_dir.iterdir()):
             if path_is_foam_dir(p):
-                cases.append(Case.try_restoring(p))
+                cases.append(Case.try_restoring(p, data_backend=self.dataframe_format))
 
         if batch_process and cases:
             # Executes the post-processing steps while handling potential case
@@ -161,7 +167,7 @@ class Session:
         cases: list[Case] = []
         for p in filter(Path.is_dir, self.archival_dir.iterdir()):
             if path_is_foam_dir(p):
-                cases.append(Case.try_restoring(p))
+                cases.append(Case.try_restoring(p, data_backend=self.dataframe_format))
 
         return [c for c in cases if c.success is False]
 
@@ -176,7 +182,7 @@ class Session:
         cases = []
         for p in filter(Path.is_dir, self.pending_dir.iterdir()):
             if path_is_foam_dir(p):
-                cases.append(Case.try_restoring(p))
+                cases.append(Case.try_restoring(p, data_backend=self.dataframe_format))
 
         return cases
 
@@ -240,7 +246,13 @@ class Session:
                     )
                     continue
 
-                Case(case_dest).post_evaluation_update(job.to_dict())
+                Case(
+                    case_dest, data_backend=self.dataframe_format
+                ).post_evaluation_update(job.to_dict())
+                if not self.job_manager.finalize_job(job):
+                    logging.warning(f"Failed to finalize tracked job state for {job}")
+
+            free_slots = self.job_manager.free_slots()
 
             # Check termination criteria after processing finished cases
             if self._check_termination_criteria():
@@ -259,9 +271,13 @@ class Session:
                 return
 
             for case in new_cases:
-                self.job_manager.submit_case(
+                submit_ok = self.job_manager.submit_case(
                     case, script_name=self.submission_script_name
                 )
+                if not submit_ok:
+                    raise RuntimeError(
+                        f"Job submission failed for generated case '{case.name}'"
+                    )
 
             # Write designs log and print all designs after submitting new cases
             if new_cases:
@@ -438,7 +454,7 @@ class Session:
                 case directory to the session data_dir.
         """
         if isinstance(case, Path):
-            case = Case(case)
+            case = Case(case, data_backend=self.dataframe_format)
 
         if move_to_session_dir:
             new_path = self.data_dir / case.name
@@ -448,15 +464,20 @@ class Session:
             case.path = new_path
             logging.info(f"Moved case to session directory [{new_path}]")
 
+        # Ensure the template's data backend matches the session so clones
+        # inherit it automatically.
+        case._data_backend = self.dataframe_format
+        case._data = _DATA_BACKENDS[self.dataframe_format](path=case.path)
+
         self._template_case = case
         self._template_case_add_files = add_files
         self.persist()
 
-    def state(self) -> dict:
+    def state(self) -> dict[str, Any]:
         """
         Return the session state as a dictionary.
         """
-        optimizer_state = {
+        optimizer_state: dict[str, Any] = {
             "type": self.backend.type,
             "offload_acquisition": self.backend.offload_acquisition,
         }
@@ -465,12 +486,20 @@ class Session:
 
         state = {
             "session": {
-                "name": self.name,
-                "data_dir": str(self.data_dir),
-                "case_dir": str(self.pending_dir),
-                "archival_dir": str(self.archival_dir),
-                "dataframe_format": self.dataframe_format,
-                "created_at": self.created_at.isoformat(),
+                k: v
+                for k, v in {
+                    "name": self.name,
+                    "data_dir": str(self.data_dir),
+                    "case_dir": str(self.pending_dir),
+                    "archival_dir": str(self.archival_dir),
+                    "dataframe_format": self.dataframe_format,
+                    "clone_method": self.clone_method,
+                    "created_at": self.created_at.isoformat(),
+                    "max_evaluations": self.max_evaluations,
+                    "target_value": self.target_value,
+                    "target_objective": self.target_objective,
+                }.items()
+                if v is not None
             },
             "template": {
                 "path": str(self._template_case.path) if self._template_case else "",
@@ -498,19 +527,31 @@ class Session:
         self.data_dir = Path(data.get("session", {}).get("data_dir"))
         self.pending_dir = Path(data.get("session", {}).get("case_dir"))
         self.archival_dir = Path(data.get("session", {}).get("archival_dir"))
-        self.dataframe_format = str(
-            data.get("session", {}).get("dataframe_format", "polars")
-        )
+        restored_fmt = str(data.get("session", {}).get("dataframe_format", "polars"))
+        if restored_fmt not in ("pandas", "polars"):
+            logging.warning(
+                f"Unknown dataframe_format '{restored_fmt}' in config, "
+                f"falling back to 'polars'"
+            )
+            restored_fmt = "polars"
+        self.dataframe_format = restored_fmt  # type: ignore[assignment]
+        self.clone_method = data.get("session", {}).get("clone_method", "foamCloneCase")
         self.created_at = datetime.fromisoformat(
             data.get("session", {}).get("created_at")
         )
+        self.max_evaluations = data.get("session", {}).get("max_evaluations")
+        self.target_value = data.get("session", {}).get("target_value")
+        self.target_objective = data.get("session", {}).get("target_objective")
 
         # [template]
-        self._template_case = Case.try_restoring(
-            str(data.get("template", {}).get("path"))
+        template_path = str(data.get("template", {}).get("path", "")).strip()
+        self._template_case = (
+            Case.try_restoring(template_path, data_backend=self.dataframe_format)
+            if template_path
+            else None
         )
         self._template_case_add_files = [
-            str(item) for item in data.get("template", {}).get("additional_files")
+            str(item) for item in data.get("template", {}).get("additional_files", [])
         ]
 
         # [optimizer]
@@ -536,8 +577,7 @@ class Session:
 
     def _apply_backend_preferences(self):
         """Apply session-level optimizer settings to the active backend when supported."""
-        if hasattr(self.backend, "random_seed"):
-            self.backend.random_seed = self.random_seed
+        self.backend.random_seed = self.random_seed
 
     def clean_pending_cases(self):
         """
@@ -628,8 +668,7 @@ class Session:
                 raise ValueError(f"Dimension '{dim.name}' not linked to an entry")
 
             reader = dim.linked_entry.reader(case.path)
-
-            if isinstance(reader, Dictionary):
+            if not isinstance(reader, Entry):
                 raise ValueError(
                     f"Dimension '{dim.name}' linked incorrectly: Entry missing"
                 )

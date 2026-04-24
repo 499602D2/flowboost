@@ -92,6 +92,10 @@ class TestDimensionCoerce:
         assert Dimension._coerce(True, "bool") is True
         assert Dimension._coerce(False, "bool") is False
 
+    def test_bool_from_invalid_string_raises(self):
+        with pytest.raises(ValueError, match="Cannot convert"):
+            Dimension._coerce("maybe", "bool")
+
     # --- str coercion ---
 
     def test_str_from_int(self):

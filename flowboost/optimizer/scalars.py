@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -18,9 +19,14 @@ def coerce_objective_scalar(value: Any, *, label: str = "Objective output") -> f
     unwrapped = _unwrap_scalar_like(value, label=label)
 
     try:
-        return Dimension._coerce(unwrapped, "float")
+        result = Dimension._coerce(unwrapped, "float")
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{label} must be numeric, got {value!r}") from exc
+
+    if not math.isfinite(result):
+        raise ValueError(f"{label} must be finite, got {result!r}")
+
+    return result
 
 
 def _unwrap_scalar_like(value: Any, *, label: str) -> Any:

@@ -1,6 +1,6 @@
 import re
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 
@@ -18,9 +18,13 @@ class FOAMType:
         Returns:
             tuple[str, str, Any]: The read (name, dimension, value) of the entry.
         """
+        raw_data = data.strip()
+        if not raw_data:
+            return None, None, ""
+
         # Use regex to search for dimension set
         dimension_regex = re.compile(r"\[.*?\]")
-        dimension_match = dimension_regex.search(data)
+        dimension_match = dimension_regex.search(raw_data)
 
         # Initialize variables
         # https://doc.cfd.direct/openfoam/user-guide-v11/basic-file-format
@@ -28,41 +32,48 @@ class FOAMType:
 
         if dimension_match:
             dimension = dimension_match.group(0)
-            before_dimension, _, after_dimension = data.partition(dimension)
+            before_dimension, _, after_dimension = raw_data.partition(dimension)
             name = before_dimension.strip()
             value = after_dimension.strip()
         else:
+            if raw_data.startswith("(") and raw_data.endswith(")"):
+                return None, None, FOAMType.parse_vector_space(raw_data)
+
             # Handle case without dimension
-            parts = data.split()
+            parts = raw_data.split(maxsplit=1)
 
             if len(parts) == 2:
                 name, value = parts[0], parts[1]
             elif len(parts) == 1:
                 # If there's only one part, consider it as value for simplicity
                 value = parts[0]
-            else:
-                raise ValueError(f"Parsing error: parts={parts}, len={len(parts)}")
 
         # Attempt to directly return the parsed scalar types
+        if value is None:
+            return name, dimension, value
+
         scalar_value = FOAMType.try_parse_scalar(value)
 
-        if scalar_value:
+        if scalar_value is not None:
             return name, dimension, scalar_value
 
         # Handle non-scalar types with a separate method
-        if data.startswith("(") and data.endswith(")"):
-            return name, dimension, FOAMType.parse_vector_space(data)
+        if value and value.startswith("(") and value.endswith(")"):
+            return name, dimension, FOAMType.parse_vector_space(value)
 
         # Attempt to parse as boolean
-        boolean_value = Switch.from_string(data).value
+        boolean_value = Switch.from_string(value).value
         if boolean_value is not None:
             return (name, dimension, boolean_value)
 
         # If all else fails, return the data as is (as value)
-        return None, None, data
+        return name, dimension, value
 
     @staticmethod
     def to_FOAM(data: Any) -> str:
+        if isinstance(data, np.generic):
+            data = data.item()
+
         # Helper function to handle vectors and tensors
         def format_vector_or_tensor(d, shape):
             if shape == (3,):  # Vector
@@ -173,21 +184,25 @@ class FOAMType:
                 return [data]  # Return as string if not parsing
 
         numbers = [FOAMType.try_parse_scalar(num) for num in re.split(r"\s+", data)]
+        if any(num is None for num in numbers):
+            return np.array(numbers)
 
-        if len(numbers) == 1:
-            return numbers[0]  # Spherical Tensor
-        elif len(numbers) == 3:
-            return np.array(numbers)  # Vector
-        elif len(numbers) == 6:
+        parsed_numbers = cast(list[int | float], numbers)
+
+        if len(parsed_numbers) == 1:
+            return parsed_numbers[0]  # Spherical Tensor
+        elif len(parsed_numbers) == 3:
+            return np.array(parsed_numbers)  # Vector
+        elif len(parsed_numbers) == 6:
             # Symmetrical Tensor
-            return FOAMType.construct_symm_tensor(numbers)
-        elif len(numbers) == 9:
-            return np.array(numbers).reshape((3, 3))  # Tensor
+            return FOAMType.construct_symm_tensor(parsed_numbers)
+        elif len(parsed_numbers) == 9:
+            return np.array(parsed_numbers).reshape((3, 3))  # Tensor
         else:
-            return np.array(numbers)  # Fallback, just in case
+            return np.array(parsed_numbers)  # Fallback, just in case
 
     @staticmethod
-    def parse_subdict(data: str) -> dict:
+    def parse_subdict(data: str) -> dict[str, Any]:
         # Very rudimentary parser for sub-dictionaries
         # Assumes well-formed input because I'm not writing a full parser here
         subdict_str = data.strip("{}").strip()
@@ -199,19 +214,13 @@ class FOAMType:
                 key, value = key.strip(), value.strip()
 
                 # Attempt to parse value as vector if it looks like one
-                if value.startswith("(") and value.endswith(")"):
-                    parsed_dict[key] = FOAMType.parse_vector_space(value, False)
-                else:
-                    # Try to convert numerical values, fall back to string
-                    if value.isdigit():
-                        parsed_dict[key] = float(value)
-                    else:
-                        parsed_dict[key] = value
+                _, _, parsed_value = FOAMType.parse(value)
+                parsed_dict[key] = parsed_value
 
         return parsed_dict
 
     @staticmethod
-    def construct_symm_tensor(components):
+    def construct_symm_tensor(components: list[int | float]) -> np.ndarray:
         assert len(components) == 6, "Symmetrical tensor must have 6 components"
         tensor = np.zeros((3, 3))
         indices = [(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)]
@@ -230,5 +239,5 @@ class Switch(Enum):
     INVALID = None  # Use None for invalid to explicitly indicate an unhandled case
 
     @classmethod
-    def from_string(cls, value: str):
+    def from_string(cls, value: str) -> "Switch":
         return cls.__members__.get(value.upper(), cls.INVALID)

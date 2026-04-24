@@ -1,5 +1,6 @@
 import logging
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
@@ -22,17 +23,22 @@ class FOAM:
         if get_runtime().mode != FOAMRuntime.Mode.NATIVE:
             return  # Container has its own environment
 
-        command = f"source {path} && env"
-        proc = subprocess.Popen(
-            command, stdout=subprocess.PIPE, shell=True, executable="/bin/bash"
+        command = f"source {shlex.quote(path)} && env"
+        result = subprocess.run(
+            ["/bin/bash", "-lc", command],
+            capture_output=True,
+            text=True,
         )
 
-        if proc.stdout:
-            for line in proc.stdout:
-                (key, _, value) = line.decode().partition("=")
-                os.environ[key] = value.strip()
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to source OpenFOAM environment from '{path}': "
+                f"{result.stderr.strip()}"
+            )
 
-        proc.communicate()
+        for line in result.stdout.splitlines():
+            (key, _, value) = line.partition("=")
+            os.environ[key] = value.strip()
 
     @staticmethod
     @openfoam_in_env
