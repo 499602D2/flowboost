@@ -163,7 +163,7 @@ class Case:
             raise FileExistsError(f"Case directory already exists: '{new_case_path}'")
 
         if method == "copy":
-            shutil.copytree(self.path, new_case_path)
+            shutil.copytree(self.path, new_case_path, symlinks=True)
         elif method == "foamCloneCase":
             assert FOAM.in_env()
             cmd = ["foamCloneCase", self.path, new_case_path]
@@ -223,7 +223,7 @@ class Case:
             raise FileExistsError(f"Destination directory already exists: {dest_path}")
 
         # Recursively copy the entire directory
-        shutil.copytree(source_path, dest_path)
+        shutil.copytree(source_path, dest_path, symlinks=True)
 
         # Create and return Case object for the new copy
         new_case = Case(path=dest_path)

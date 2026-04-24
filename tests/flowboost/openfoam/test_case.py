@@ -24,6 +24,32 @@ def tutorial_case(foam_in_env, tmp_path):
     yield case
     case._delete_all_data()
 
+@pytest.mark.slow
+def test_case_clone_preserves_symlinks(foam_in_env, tutorial_case, tmp_path):
+    """Test that cloning a case preserves symbolic links instead of hardcopying them."""
+    # Create a dummy file and a symlink pointing to it inside the tutorial case
+    real_file = tutorial_case.path / "dummy_real_file.txt"
+    real_file.write_text("I am a real file")
+
+    symlink_file = tutorial_case.path / "dummy_symlink.txt"
+    symlink_file.symlink_to(real_file)
+
+    assert symlink_file.is_symlink(), "Symlink was not created in source case"
+
+    # Clone the case
+    clone_dest = tmp_path / "clonedCaseSymlinkTest"
+    new_case = tutorial_case.clone(clone_to=clone_dest, method="copy")
+
+    cloned_symlink = new_case.path / "dummy_symlink.txt"
+
+    # Ensure the symlink exists in the cloned case and is still a symlink (not hardcopied)
+    assert cloned_symlink.exists(), "Symlink target missing in cloned case"
+    assert cloned_symlink.is_symlink(), (
+        "Symbolic link was hardcopied instead of being preserved as a symlink"
+    )
+
+    # Cleanup
+    new_case._delete_all_data()
 
 @pytest.mark.slow
 def test_dictionary_entries(foam_in_env, tutorial_case):
