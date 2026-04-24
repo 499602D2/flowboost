@@ -10,9 +10,12 @@ from ax.core.base_trial import BaseTrial
 from ax.exceptions.core import DataRequiredError
 from ax.service.ax_client import AxClient, ObjectiveProperties, TParameterization
 
+from ax.core.objective import ScalarizedObjective as AxScalarizedObjective
+from ax.core.optimization_config import OptimizationConfig
+
 from flowboost.openfoam.case import Case
 from flowboost.optimizer.backend import Backend, OptimizationComplete
-from flowboost.optimizer.objectives import AggregateObjective, Objective
+from flowboost.optimizer.objectives import Objective, ScalarizedObjective
 from flowboost.optimizer.scalars import coerce_objective_scalar
 from flowboost.optimizer.search_space import Dimension
 
@@ -104,6 +107,19 @@ class AxBackend(Backend):
                 # total in-flight jobs externally.
                 "enforce_sequential_optimization": False,
             },
+        )
+
+        self._maybe_install_scalarized_objective()
+
+        # Outcome standardization is handled by Ax: the BoTorch generator's
+        # default transform stack applies BilogY → StandardizeY before model
+        # fit, and BoTorch's SingleTaskGP wraps outcomes in its own
+        # Standardize. Some Ax versions also add Winsorize. Don't add a
+        # normalization layer in your Objective.
+        logging.info(
+            "Ax handles outcome normalization (BilogY → StandardizeY → "
+            "GP.Standardize; Winsorize may be present depending on Ax version). "
+            "No flowboost-side transforms needed."
         )
 
         logging.info("Ax experiment initialized")
@@ -260,9 +276,19 @@ class AxBackend(Backend):
         self._trial_index_case_mapping = {}
         self.initialize()
 
-    def set_objectives(self, objectives: list[Union[Objective, AggregateObjective]]):
-        if isinstance(objectives, (Objective, AggregateObjective)):
+    def set_objectives(
+        self, objectives: Union[Objective, ScalarizedObjective, list[Objective]]
+    ):
+        if isinstance(objectives, (Objective, ScalarizedObjective)):
             objectives = [objectives]
+        if (
+            any(isinstance(o, ScalarizedObjective) for o in objectives)
+            and len(objectives) > 1
+        ):
+            raise ValueError(
+                "ScalarizedObjective must be the only top-level objective; "
+                "mixing it with other objectives is not supported."
+            )
         self.objectives = objectives
 
     def set_search_space(self, dimensions: list[Dimension]):
@@ -587,13 +613,55 @@ class AxBackend(Backend):
             )
 
     def _get_ax_objectives(self) -> dict[str, ObjectiveProperties]:
+        """Build the per-metric registration passed to AxClient.create_experiment.
+
+        For top-level Objectives, the objective is the metric. For a top-level
+        ScalarizedObjective, each inner Objective is registered as its own
+        metric so Ax models them independently; the single-objective scalarized
+        OptimizationConfig is then installed by `_maybe_install_scalarized_objective`.
+        """
         ax_objectives: dict[str, ObjectiveProperties] = {}
         for objective in self.objectives:
-            ax_objectives[objective.name] = ObjectiveProperties(
-                minimize=objective.minimize, threshold=objective.threshold
-            )
+            if isinstance(objective, ScalarizedObjective):
+                for inner in objective.objectives:
+                    ax_objectives[inner.name] = ObjectiveProperties(
+                        minimize=inner.minimize, threshold=inner.threshold
+                    )
+            else:
+                ax_objectives[objective.name] = ObjectiveProperties(
+                    minimize=objective.minimize, threshold=objective.threshold
+                )
 
         return ax_objectives
+
+    def _maybe_install_scalarized_objective(self) -> None:
+        """Swap in Ax's native ScalarizedObjective when the user asked for one.
+
+        AxClient.create_experiment treats multi-metric input as MOO by default;
+        we override the optimization_config so the inner metrics are scalarized
+        at the acquisition step. Each metric still has its own surrogate and
+        its own StandardizeY — that's the win over computing the weighted sum
+        upstream.
+        """
+        scalarized = [o for o in self.objectives if isinstance(o, ScalarizedObjective)]
+        if not scalarized:
+            return
+
+        flowboost_obj = scalarized[0]
+        # Reuse the Metric objects Ax already registered for the inner
+        # objectives in `_get_ax_objectives`; constructing fresh ones here
+        # would re-encode `lower_is_better` and invite the two paths to drift.
+        metrics = [
+            self.client.experiment.metrics[inner.name]
+            for inner in flowboost_obj.objectives
+        ]
+        self.client.experiment.optimization_config = OptimizationConfig(
+            objective=AxScalarizedObjective(
+                metrics=metrics,
+                weights=flowboost_obj.weights,
+                minimize=flowboost_obj.minimize,
+            )
+        )
 
     def _dim_to_Ax_parameter_dict(self, dim: Dimension) -> dict[str, Any]:
         d: dict[str, Any] = {

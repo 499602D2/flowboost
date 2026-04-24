@@ -5,7 +5,7 @@ import pytest
 from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
 from flowboost.optimizer.interfaces.Ax import AxBackend
-from flowboost.optimizer.objectives import AggregateObjective, Objective
+from flowboost.optimizer.objectives import Objective, ScalarizedObjective
 from flowboost.optimizer.search_space import Dimension
 
 
@@ -193,21 +193,19 @@ class TestBatchProcessSuccessStateSemantics:
         metadata = case.read_metadata()
         assert metadata is not None
         assert metadata["objective-outputs"]["score"]["value"] == 1.0
-        assert metadata["objective-values-raw"]["score"] == 1.0
 
-    def test_success_none_case_is_processed_for_aggregate_objective(self, tmp_path):
+    def test_success_none_case_is_processed_for_scalarized_objective(self, tmp_path):
         backend = AxBackend()
         backend.set_search_space([_make_dim()])
         backend.set_objectives(
             [
-                AggregateObjective(
+                ScalarizedObjective(
                     "agg",
                     minimize=True,
                     objectives=[
                         Objective("a", minimize=True, objective_function=lambda c: 2.0),
                         Objective("b", minimize=True, objective_function=lambda c: 3.0),
                     ],
-                    threshold=0.0,
                 )
             ]
         )
@@ -222,4 +220,8 @@ class TestBatchProcessSuccessStateSemantics:
         metadata = case.read_metadata()
         assert metadata is not None
         assert metadata["objective-outputs"]["agg"]["value"] == 5.0
-        assert metadata["objective-values-raw"]["agg"] == 5.0
+        # Per-inner-metric components are persisted alongside the scalar.
+        assert metadata["objective-outputs"]["agg"]["components"] == {
+            "a": 2.0,
+            "b": 3.0,
+        }

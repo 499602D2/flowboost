@@ -5,6 +5,9 @@ flowboost_data
 # Other files
 TODO.md
 
+# Agent harness dirs
+.claude
+
 # Custom instruction files
 AGENTS.md
 CLAUDE.md

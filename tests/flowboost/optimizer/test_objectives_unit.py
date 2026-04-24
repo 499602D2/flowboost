@@ -1,13 +1,11 @@
-"""Unit tests for Objective and AggregateObjective — no OpenFOAM needed."""
+"""Unit tests for Objective and ScalarizedObjective — no OpenFOAM needed."""
+
+import math
 
 import pytest
 
 from flowboost.openfoam.case import Case
-from flowboost.optimizer.objectives import (
-    AggregateObjective,
-    Objective,
-    ScikitNormalizationStep,
-)
+from flowboost.optimizer.objectives import Objective, ScalarizedObjective
 
 
 @pytest.fixture
@@ -50,12 +48,12 @@ class TestObjectiveEvaluate:
     def test_save_value_false_does_not_store(self, case):
         obj = Objective("test", minimize=True, objective_function=lambda c: 5.0)
         obj.evaluate(case, save_value=False)
-        assert obj.data_for_case(case, post_processed=False) is None
+        assert obj.data_for_case(case) is None
 
     def test_save_value_true_stores(self, case):
         obj = Objective("test", minimize=True, objective_function=lambda c: 5.0)
         obj.evaluate(case, save_value=True)
-        assert obj.data_for_case(case, post_processed=False) == 5.0
+        assert obj.data_for_case(case) == 5.0
 
     def test_kwargs_passed_to_function(self, case):
         def fn(c, *, multiplier):
@@ -68,6 +66,16 @@ class TestObjectiveEvaluate:
             objective_function_kwargs={"multiplier": 10},
         )
         assert obj.evaluate(case) == 20
+
+    def test_static_transform_applied(self, case):
+        obj = Objective(
+            "test",
+            minimize=True,
+            objective_function=lambda c: math.e,
+            static_transform=math.log,
+        )
+        assert obj.evaluate(case) == pytest.approx(1.0)
+        assert obj.data_for_case(case) == pytest.approx(1.0)
 
 
 class TestObjectiveBatch:
@@ -82,29 +90,27 @@ class TestObjectiveBatch:
         results = obj.batch_evaluate(cases)
         assert results == [1.0, 1.0, 1.0]
 
-    def test_batch_post_process(self, tmp_path):
-        cases = []
-        for i in range(3):
-            d = tmp_path / f"case_{i}"
-            d.mkdir()
-            cases.append(Case(d))
-
-        obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
-        outputs = [1.0, 2.0, 3.0]
-        result = obj.batch_post_process(cases, outputs)
-        assert result == [1.0, 2.0, 3.0]
-
 
 class TestObjectiveDataForCase:
-    def test_pre_processed(self, case):
+    def test_returns_evaluated_value(self, case):
         obj = Objective("test", minimize=True, objective_function=lambda c: 7.0)
         obj.evaluate(case, save_value=True)
-        assert obj.data_for_case(case, post_processed=False) == 7.0
+        assert obj.data_for_case(case) == 7.0
 
     def test_missing_case_returns_none(self, case):
         obj = Objective("test", minimize=True, objective_function=lambda c: 7.0)
-        assert obj.data_for_case(case, post_processed=True) is None
-        assert obj.data_for_case(case, post_processed=False) is None
+        assert obj.data_for_case(case) is None
+
+
+class TestObjectiveMetricValues:
+    def test_evaluated(self, case):
+        obj = Objective("score", minimize=True, objective_function=lambda c: 3.0)
+        obj.evaluate(case)
+        assert obj.metric_values_for_case(case) == {"score": 3.0}
+
+    def test_unevaluated(self, case):
+        obj = Objective("score", minimize=True, objective_function=lambda c: 3.0)
+        assert obj.metric_values_for_case(case) == {}
 
 
 class TestObjectiveExceptionPropagation:
@@ -125,7 +131,7 @@ class TestObjectiveExceptionPropagation:
             obj.evaluate(case)
 
 
-class TestAggregateObjective:
+class TestScalarizedObjective:
     def _make_objectives(self):
         obj1 = Objective("a", minimize=True, objective_function=lambda c: 2.0)
         obj2 = Objective("b", minimize=True, objective_function=lambda c: 3.0)
@@ -133,157 +139,216 @@ class TestAggregateObjective:
 
     def test_empty_objectives_raises(self):
         with pytest.raises(ValueError, match="at least one objective"):
-            AggregateObjective(
-                "agg",
-                minimize=True,
-                objectives=[],
-                threshold=0.0,
-            )
+            ScalarizedObjective("agg", minimize=True, objectives=[])
 
     def test_mismatched_weights_raises(self):
         objs = self._make_objectives()
         with pytest.raises(ValueError, match="weights must match"):
-            AggregateObjective(
-                "agg", minimize=True, objectives=objs, threshold=0.0, weights=[1.0]
-            )
+            ScalarizedObjective("agg", minimize=True, objectives=objs, weights=[1.0])
 
-    def test_default_weights(self):
+    def test_default_weights_are_ones(self):
         objs = self._make_objectives()
-        agg = AggregateObjective("agg", minimize=True, objectives=objs, threshold=0.0)
+        agg = ScalarizedObjective("agg", minimize=True, objectives=objs)
         assert agg.weights == [1.0, 1.0]
 
-    def test_aggregate_outputs(self):
-        objs = self._make_objectives()
-        agg = AggregateObjective(
-            "agg", minimize=True, objectives=objs, threshold=0.0, weights=[0.5, 0.5]
-        )
-        result = agg.aggregate_outputs([(2.0, 3.0)])
-        assert result == [2.5]
+    def test_evaluate_signed_weighted_sum(self, tmp_path):
+        d = tmp_path / "case"
+        d.mkdir()
+        case = Case(d)
 
-    def test_aggregate_multiple_cases(self):
-        objs = self._make_objectives()
-        agg = AggregateObjective(
-            "agg", minimize=True, objectives=objs, threshold=0.0, weights=[1.0, 2.0]
-        )
-        result = agg.aggregate_outputs([(1.0, 1.0), (2.0, 3.0)])
-        assert result == [3.0, 8.0]
-
-    def test_batch_process(self, tmp_path):
-        obj1 = Objective("a", minimize=True, objective_function=lambda c: 2.0)
-        obj2 = Objective("b", minimize=True, objective_function=lambda c: 3.0)
-
-        cases = []
-        for i in range(2):
-            d = tmp_path / f"case_{i}"
-            d.mkdir()
-            cases.append(Case(d))
-
-        agg = AggregateObjective(
+        agg = ScalarizedObjective(
             "agg",
             minimize=True,
-            objectives=[obj1, obj2],
-            threshold=0.0,
-            weights=[1.0, 1.0],
+            objectives=self._make_objectives(),
+            weights=[0.5, 0.5],
         )
-        result = agg.batch_process(cases)
-        assert result == [5.0, 5.0]
+        # 0.5 * 2.0 + 0.5 * 3.0 = 2.5
+        assert agg.evaluate(case) == pytest.approx(2.5)
+        assert agg.data_for_case(case) == pytest.approx(2.5)
+
+    def test_negative_weight_flips_inner_direction(self, tmp_path):
+        d = tmp_path / "case"
+        d.mkdir()
+        case = Case(d)
+
+        # Lift-to-drag-style: maximize lift (a), minimize drag (b),
+        # maximize the scalarized sum. Negative weight on drag flips its
+        # contribution so increasing the scalar means decreasing drag.
+        # 0.7 * 2.0 - 0.3 * 3.0 = 1.4 - 0.9 = 0.5
+        objs = [
+            Objective("a", minimize=False, objective_function=lambda c: 2.0),
+            Objective("b", minimize=True, objective_function=lambda c: 3.0),
+        ]
+        agg = ScalarizedObjective(
+            "agg", minimize=False, objectives=objs, weights=[0.7, -0.3]
+        )
+        assert agg.evaluate(case) == pytest.approx(0.5)
+
+    def test_inconsistent_direction_rejected(self):
+        # Maximizing scalar but inner is minimize=True with positive weight:
+        # weight sign implies "maximize this term", contradicts inner direction.
+        objs = [Objective("a", minimize=True, objective_function=lambda c: 1.0)]
+        with pytest.raises(ValueError, match="Inconsistent direction"):
+            ScalarizedObjective("agg", minimize=False, objectives=objs, weights=[1.0])
+
+    def test_inner_threshold_rejected(self):
+        objs = [
+            Objective(
+                "a", minimize=True, objective_function=lambda c: 1.0, threshold=0.5
+            ),
+        ]
+        with pytest.raises(ValueError, match="threshold is not honored"):
+            ScalarizedObjective("agg", minimize=True, objectives=objs)
+
+    def test_inner_failure_short_circuits(self, tmp_path):
+        d = tmp_path / "case"
+        d.mkdir()
+        case = Case(d)
+
+        objs = [
+            Objective("a", minimize=True, objective_function=lambda c: 2.0),
+            Objective("b", minimize=True, objective_function=lambda c: None),
+        ]
+        agg = ScalarizedObjective("agg", minimize=True, objectives=objs)
+        assert agg.evaluate(case) is None
+        assert case.success is False
+
+    def test_metric_values_for_case_returns_inner_metrics(self, tmp_path):
+        d = tmp_path / "case"
+        d.mkdir()
+        case = Case(d)
+
+        agg = ScalarizedObjective(
+            "agg", minimize=True, objectives=self._make_objectives()
+        )
+        agg.evaluate(case)
+        # Ax-native scalarization gets per-inner-metric values, not the scalar.
+        assert agg.metric_values_for_case(case) == {"a": 2.0, "b": 3.0}
+
+    def test_metric_values_empty_when_unevaluated(self, tmp_path):
+        d = tmp_path / "case"
+        d.mkdir()
+        case = Case(d)
+
+        agg = ScalarizedObjective(
+            "agg", minimize=True, objectives=self._make_objectives()
+        )
+        assert agg.metric_values_for_case(case) == {}
 
     def test_data_for_case(self, tmp_path):
-        obj1 = Objective("a", minimize=True, objective_function=lambda c: 2.0)
-        obj2 = Objective("b", minimize=True, objective_function=lambda c: 3.0)
-
         d = tmp_path / "case"
         d.mkdir()
         case = Case(d)
 
-        agg = AggregateObjective(
-            "agg",
-            minimize=True,
-            objectives=[obj1, obj2],
-            threshold=0.0,
+        agg = ScalarizedObjective(
+            "agg", minimize=True, objectives=self._make_objectives()
         )
-        agg.batch_process([case])
-        assert agg.data_for_case(case, post_processed=True) == 5.0
-        assert agg.data_for_case(case, post_processed=False) == [2.0, 3.0]
+        agg.evaluate(case)
+        # Default weights are [1.0, 1.0] → sum = 5.0
+        assert agg.data_for_case(case) == pytest.approx(5.0)
 
 
-class TestScikitNormalizationStep:
-    def test_rejects_object_without_fit_transform(self):
-        with pytest.raises(ValueError, match="fit_transform"):
-            ScikitNormalizationStep({"not": "a normalizer"})
+class TestScalarizedObjectiveWeightValidation:
+    @pytest.mark.parametrize(
+        "bad_weight",
+        [float("nan"), float("inf"), float("-inf")],
+        ids=["nan", "pos_inf", "neg_inf"],
+    )
+    def test_non_finite_weight_rejected(self, bad_weight):
+        objs = [
+            Objective("a", minimize=True, objective_function=lambda c: 1.0),
+            Objective("b", minimize=True, objective_function=lambda c: 2.0),
+        ]
+        with pytest.raises(ValueError, match="not finite"):
+            ScalarizedObjective(
+                "agg", minimize=True, objectives=objs, weights=[bad_weight, 1.0]
+            )
 
-    def test_rejects_lambda(self):
-        with pytest.raises(ValueError, match="fit_transform"):
-            ScikitNormalizationStep(lambda x: x)
+    def test_all_zero_weights_rejected(self):
+        objs = [
+            Objective("a", minimize=True, objective_function=lambda c: 1.0),
+            Objective("b", minimize=True, objective_function=lambda c: 2.0),
+        ]
+        with pytest.raises(ValueError, match="no non-zero weights"):
+            ScalarizedObjective(
+                "agg", minimize=True, objectives=objs, weights=[0.0, 0.0]
+            )
 
-    def test_accepts_valid_normalizer(self):
-        from sklearn.preprocessing import MinMaxScaler
+    def test_zero_weight_warns_and_accepts(self, caplog):
+        objs = [
+            Objective("a", minimize=True, objective_function=lambda c: 1.0),
+            Objective("b", minimize=True, objective_function=lambda c: 2.0),
+        ]
+        with caplog.at_level("WARNING"):
+            agg = ScalarizedObjective(
+                "agg", minimize=True, objectives=objs, weights=[0.0, 1.0]
+            )
+        assert agg.weights == [0.0, 1.0]
+        assert any("weight 0" in rec.message for rec in caplog.records)
 
-        step = ScikitNormalizationStep(MinMaxScaler())
-        result = step.evaluate([1.0, 2.0, 3.0])
-        assert result[0] == pytest.approx(0.0)
-        assert result[-1] == pytest.approx(1.0)
+    def test_zero_weight_skips_direction_check(self, caplog):
+        # Mixed-direction inner: if the zero-weight term weren't skipped, the
+        # direction check would reject this because w=0 is neither positive
+        # nor negative, and the strict `w > 0` comparison misclassifies it.
+        objs = [
+            Objective("a", minimize=False, objective_function=lambda c: 1.0),
+            Objective("b", minimize=True, objective_function=lambda c: 2.0),
+        ]
+        with caplog.at_level("WARNING"):
+            agg = ScalarizedObjective(
+                "agg", minimize=True, objectives=objs, weights=[0.0, 1.0]
+            )
+        assert agg.weights == [0.0, 1.0]
 
-
-class TestAddNormalizationStep:
-    def test_unsupported_method_raises(self):
-        obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
-        with pytest.raises(ValueError, match="Unsupported"):
-            obj.add_normalization_step("z-score")
-
-    def test_supported_methods(self):
-        for method in ("min-max", "yeo-johnson"):
-            obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
-            obj.add_normalization_step(method)
-            assert len(obj._post_processing_steps) == 1
-
-
-class TestExecutePostProcessingSteps:
-    def test_mismatched_counts_raises(self, tmp_path):
-        d = tmp_path / "case"
-        d.mkdir()
-        case = Case(d)
-
-        obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
-        with pytest.raises(ValueError, match="Case count"):
-            obj.execute_post_processing_steps(cases=[case], outputs=[1.0, 2.0])
-
-    def test_empty_returns_empty(self):
-        obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
-        result = obj.execute_post_processing_steps(cases=[], outputs=[])
-        assert result == {}
-
-    def test_step_that_changes_cardinality_raises(self, tmp_path):
-        cases = []
-        for i in range(2):
-            d = tmp_path / f"case_{i}"
-            d.mkdir()
-            cases.append(Case(d))
-
-        obj = Objective("test", minimize=True, objective_function=lambda c: 1.0)
-        obj.attach_post_processing_step(lambda outputs: list(outputs)[:1])
-
-        with pytest.raises(ValueError, match="changed output cardinality"):
-            obj.execute_post_processing_steps(cases=cases, outputs=[1.0, 2.0])
+    def test_negative_zero_weight_warns_and_accepts(self, caplog):
+        objs = [
+            Objective("a", minimize=True, objective_function=lambda c: 1.0),
+            Objective("b", minimize=True, objective_function=lambda c: 2.0),
+        ]
+        with caplog.at_level("WARNING"):
+            agg = ScalarizedObjective(
+                "agg", minimize=True, objectives=objs, weights=[-0.0, 1.0]
+            )
+        assert agg.weights == [-0.0, 1.0]
+        assert any("weight 0" in rec.message for rec in caplog.records)
 
 
-class TestAggregateBatchPostProcessing:
-    def test_step_that_changes_column_cardinality_raises(self, tmp_path):
-        cases = []
-        for i in range(2):
-            d = tmp_path / f"case_{i}"
-            d.mkdir()
-            cases.append(Case(d))
-
-        obj1 = Objective("a", minimize=True, objective_function=lambda c: 2.0)
-        obj2 = Objective("b", minimize=True, objective_function=lambda c: 3.0)
-        agg = AggregateObjective(
-            "agg",
+class TestScalarizedObjectiveInnerValidation:
+    def test_nested_scalarized_rejected(self):
+        inner = ScalarizedObjective(
+            "inner",
             minimize=True,
-            objectives=[obj1, obj2],
-            threshold=0.0,
+            objectives=[
+                Objective("a", minimize=True, objective_function=lambda c: 1.0)
+            ],
+            weights=[1.0],
         )
-        agg.attach_post_processing_step(lambda outputs: list(outputs)[:1])
+        with pytest.raises(TypeError, match="Nested scalarization"):
+            ScalarizedObjective(
+                "outer", minimize=True, objectives=[inner], weights=[1.0]
+            )
 
-        with pytest.raises(ValueError, match="changed output cardinality"):
-            agg.batch_post_process(cases=cases, outputs=[(2.0, 3.0), (4.0, 5.0)])
+    def test_non_objective_rejected(self):
+        with pytest.raises(TypeError, match="must be an Objective"):
+            ScalarizedObjective(
+                "agg",
+                minimize=True,
+                objectives=["not an objective"],  # type: ignore[list-item]
+                weights=[1.0],
+            )
+
+    def test_duplicate_inner_names_rejected(self):
+        objs = [
+            Objective("same", minimize=True, objective_function=lambda c: 1.0),
+            Objective("same", minimize=True, objective_function=lambda c: 2.0),
+        ]
+        with pytest.raises(ValueError, match="duplicate inner objective names"):
+            ScalarizedObjective("agg", minimize=True, objectives=objs)
+
+    def test_same_instance_twice_rejected_via_name_check(self):
+        # Same instance shares the same name by construction, so the
+        # duplicate-name check catches it. Pinned here so a future reorder
+        # doesn't silently let this through.
+        obj = Objective("solo", minimize=True, objective_function=lambda c: 1.0)
+        with pytest.raises(ValueError, match="duplicate inner objective names"):
+            ScalarizedObjective("agg", minimize=True, objectives=[obj, obj])

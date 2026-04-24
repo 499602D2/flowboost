@@ -70,7 +70,6 @@ if __name__ == "__main__":
         name="L/D",
         minimize=False,
         objective_function=max_lift_drag_objective,
-        normalization_step="yeo-johnson",
     )
 
     session.backend.set_objectives([objective])

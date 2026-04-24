@@ -10,7 +10,7 @@ from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
 from flowboost.optimizer.backend import OptimizationComplete
 from flowboost.optimizer.interfaces.Ax import AxBackend
-from flowboost.optimizer.objectives import AggregateObjective, Objective
+from flowboost.optimizer.objectives import Objective, ScalarizedObjective
 from flowboost.optimizer.search_space import Dimension
 
 
@@ -103,7 +103,7 @@ def test_ask_with_no_initialization_but_cold_start_trials_works(tmp_path):
     via tell() before ask(). This path must keep working."""
     first = _make_case(tmp_path, "cold-a", value=0.25)
     second = _make_case(tmp_path, "cold-b", value=0.75)
-    backend, objective = _make_normalized_backend(first)
+    backend, objective = _make_simple_backend(first)
     backend.initialization_trials = 0
     # Re-initialize so the init_trials=0 setting takes effect.
     backend._initialized = False
@@ -136,7 +136,7 @@ def test_tell_on_unevaluated_case_raises_clear_error(tmp_path):
     blow up with 'output None for case ...' from deep inside Case; it should
     now point the caller at batch_process / get_finished_cases(batch_process=True)."""
     unevaluated = _make_case(tmp_path, "unevaluated", value=0.5)
-    backend, _ = _make_normalized_backend(unevaluated)
+    backend, _ = _make_simple_backend(unevaluated)
     other = _make_case(tmp_path, "other", value=0.25)
 
     with pytest.raises(ValueError, match="has not been evaluated"):
@@ -147,13 +147,9 @@ def test_tell_on_unevaluated_case_raises_clear_error(tmp_path):
 def test_tell(Ax_backend, test_case, foam_in_env):
     # Evaluate an objective
     obj = Ax_backend.objectives[0]
+    out = obj.batch_evaluate(cases=[test_case])
+    logging.info(f"Evaluated: {out}")
 
-    # Run evaluation for objective
-    outputs = obj.batch_evaluate(cases=[test_case])
-    out = obj.batch_post_process(cases=[test_case], outputs=outputs)
-    logging.info(f"Batch-processed: {out}")
-
-    # Initialize backend
     Ax_backend.initialize()
 
     logging.info("Running tell()")
@@ -178,21 +174,18 @@ def _make_case_with_params(
 
 
 def _evaluate_objective(case: Case, objective: Objective) -> None:
-    outputs = objective.batch_evaluate([case])
-    objective.batch_post_process([case], outputs)
+    objective.batch_evaluate([case])
 
 
 def _evaluate_objective_batch(cases: list[Case], objective: Objective) -> None:
-    outputs = objective.batch_evaluate(cases)
-    objective.batch_post_process(cases, outputs)
+    objective.batch_evaluate(cases)
 
 
-def _make_normalized_backend(case: Case) -> tuple[AxBackend, Objective]:
+def _make_simple_backend(case: Case) -> tuple[AxBackend, Objective]:
     objective = Objective(
-        name="normalized_objective",
+        name="simple_objective",
         minimize=True,
         objective_function=lambda _: 1.0,
-        normalization_step="min-max",
     )
     _evaluate_objective(case, objective)
 
@@ -275,7 +268,7 @@ def _collect_issue_style_suggestions(
 
 def test_tell_accepts_normalized_scalar_like_outputs(tmp_path):
     case = _make_case(tmp_path, "normalized-case")
-    backend, _ = _make_normalized_backend(case)
+    backend, _ = _make_simple_backend(case)
 
     backend.tell([case])
 
@@ -284,9 +277,9 @@ def test_tell_accepts_normalized_scalar_like_outputs(tmp_path):
     assert trial.status.is_completed
 
 
-def test_batch_process_and_tell_support_aggregate_objective(tmp_path):
-    first_case = _make_case(tmp_path, "aggregate-a", value=0.25)
-    second_case = _make_case(tmp_path, "aggregate-b", value=0.75)
+def test_batch_process_and_tell_support_scalarized_objective(tmp_path):
+    first_case = _make_case(tmp_path, "scalarized-a", value=0.25)
+    second_case = _make_case(tmp_path, "scalarized-b", value=0.75)
     for case in (first_case, second_case):
         case.success = True
 
@@ -302,11 +295,10 @@ def test_batch_process_and_tell_support_aggregate_objective(tmp_path):
         minimize=True,
         objective_function=lambda case: 2.0,
     )
-    aggregate = AggregateObjective(
-        name="aggregate",
+    scalarized = ScalarizedObjective(
+        name="scalarized",
         minimize=True,
         objectives=[objective_a, objective_b],
-        threshold=0.0,
         weights=[0.5, 0.5],
     )
 
@@ -323,14 +315,17 @@ def test_batch_process_and_tell_support_aggregate_objective(tmp_path):
             )
         ]
     )
-    backend.set_objectives([aggregate])
+    backend.set_objectives([scalarized])
 
     outputs = backend.batch_process([first_case, second_case])
-    assert outputs == [[1.125, 1.375]]
-    assert aggregate.data_for_case(first_case) == pytest.approx(1.125)
-    assert aggregate.data_for_case(second_case) == pytest.approx(1.375)
+    assert outputs == [[pytest.approx(1.125), pytest.approx(1.375)]]
+    assert scalarized.data_for_case(first_case) == pytest.approx(1.125)
+    assert scalarized.data_for_case(second_case) == pytest.approx(1.375)
 
     backend.tell([first_case, second_case])
+
+    # The Ax experiment should know about the inner metrics (Ax-native scalarization).
+    assert set(backend.client.experiment.metrics) == {"component_a", "component_b"}
 
     for case in (first_case, second_case):
         trial_index = backend._trial_index_case_mapping[case]
@@ -341,7 +336,7 @@ def test_batch_process_and_tell_support_aggregate_objective(tmp_path):
 def test_tell_reuses_existing_arm_for_duplicate_parameterizations(tmp_path):
     first_case = _make_case(tmp_path, "duplicate-a", value=0.5)
     second_case = _make_case(tmp_path, "duplicate-b", value=0.5)
-    backend, objective = _make_normalized_backend(first_case)
+    backend, objective = _make_simple_backend(first_case)
     _evaluate_objective_batch([first_case, second_case], objective)
 
     backend.tell([first_case, second_case])
@@ -372,7 +367,7 @@ def test_tell_collapses_boundary_float_noise_onto_one_arm(tmp_path):
     noisy_up = _make_case(tmp_path, "boundary-noisy-up", value=0.5 + 1e-14)
     noisy_down = _make_case(tmp_path, "boundary-noisy-down", value=0.5 - 1e-14)
 
-    backend, objective = _make_normalized_backend(exact)
+    backend, objective = _make_simple_backend(exact)
     _evaluate_objective_batch([exact, noisy_up, noisy_down], objective)
 
     # Sanity-check the precondition: default digits is set for a float range.
@@ -392,20 +387,20 @@ def test_tell_collapses_boundary_float_noise_onto_one_arm(tmp_path):
     assert list(backend.client.experiment.arms_by_name) == [exact.name]
 
 
-def test_prepare_for_acquisition_offload_serializes_normalized_outputs(tmp_path):
+def test_prepare_for_acquisition_offload_serializes_objective_outputs(tmp_path):
     case = _make_case(tmp_path, "offload-case")
-    backend, _ = _make_normalized_backend(case)
+    backend, _ = _make_simple_backend(case)
     backend.offload_acquisition = True
     backend.initialize()
 
     _, data_snapshot = backend.prepare_for_acquisition_offload([case], [], tmp_path)
     snapshot_data = json.loads(data_snapshot.read_text())
     objective_value = snapshot_data["finished_cases"][case.name]["objectives"][
-        "normalized_objective"
+        "simple_objective"
     ]
 
     assert type(objective_value) is float
-    assert objective_value == 0.0
+    assert objective_value == 1.0
 
 
 def test_prepare_for_acquisition_offload_rejects_duplicate_pending_case_names(
@@ -424,7 +419,7 @@ def test_prepare_for_acquisition_offload_rejects_duplicate_pending_case_names(
             entry_header="optimizer-suggestion",
         )
 
-    backend, _ = _make_normalized_backend(first_case)
+    backend, _ = _make_simple_backend(first_case)
     backend.offload_acquisition = True
     backend.initialize()
 
@@ -434,7 +429,7 @@ def test_prepare_for_acquisition_offload_rejects_duplicate_pending_case_names(
 
 def test_offloaded_acquisition_round_trip(tmp_path):
     case = _make_case(tmp_path, "roundtrip-case")
-    backend, _ = _make_normalized_backend(case)
+    backend, _ = _make_simple_backend(case)
     backend.offload_acquisition = True
     backend.initialize()
 
@@ -459,7 +454,7 @@ def test_offloaded_acquisition_round_trip(tmp_path):
 def test_offloaded_acquisition_accepts_duplicate_parameterizations(tmp_path):
     first_case = _make_case(tmp_path, "roundtrip-duplicate-a", value=0.5)
     second_case = _make_case(tmp_path, "roundtrip-duplicate-b", value=0.5)
-    backend, objective = _make_normalized_backend(first_case)
+    backend, objective = _make_simple_backend(first_case)
     _evaluate_objective_batch([first_case, second_case], objective)
     backend.offload_acquisition = True
     backend.initialize()

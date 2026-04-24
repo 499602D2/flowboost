@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Any, Union
 
 from flowboost.openfoam.case import Case
-from flowboost.optimizer.objectives import AggregateObjective, Objective
-from flowboost.optimizer.scalars import coerce_objective_scalar
+from flowboost.optimizer.objectives import Objective, ScalarizedObjective
 from flowboost.optimizer.search_space import Dimension
 
 DEFAULT_OFFLOAD_RESULT_FNAME = "acquisition_result.json"
@@ -16,7 +15,7 @@ DEFAULT_OFFLOAD_RESULT_FNAME = "acquisition_result.json"
 class Backend(ABC):
     def __init__(self) -> None:
         self.type: str = self.__class__.__name__
-        self.objectives: list[Union[Objective, AggregateObjective]] = []
+        self.objectives: list[Union[Objective, ScalarizedObjective]] = []
         self.dimensions: list[Dimension] = []
         self.offload_acquisition: bool = False
         self.random_seed: int | None = None
@@ -50,7 +49,7 @@ class Backend(ABC):
         pass
 
     @abstractmethod
-    def set_objectives(self, objectives: list[Union[Objective, AggregateObjective]]):
+    def set_objectives(self, objectives: list[Union[Objective, ScalarizedObjective]]):
         pass
 
     @abstractmethod
@@ -211,95 +210,49 @@ class Backend(ABC):
         pass
 
     def batch_process(self, cases: list[Case]) -> list[list[float]]:
-        """
-        Process a batch of cases through all objectives, applying any necessary
-        batch processing and aggregation, and return a list of lists of floats
-        suitable for optimization.
-        """
-        all_objective_outputs = []
+        """Evaluate every objective on `cases` and persist results to metadata.
 
-        # Step 1: Evaluate the objective functions
+        Returns a list-of-lists shaped [num_objectives][num_successful_cases].
+        For a ScalarizedObjective, the returned row is the scalarized value;
+        per-inner-metric values are still cached on each inner Objective for
+        the backend to retrieve when telling Ax.
+        """
         for objective in self.objectives:
             logging.info(f"Processing objective '{objective.name}'")
-            objective_outputs = objective.batch_evaluate(cases, save_values=False)
-            all_objective_outputs.append(objective_outputs)
+            objective.batch_evaluate(cases, save_values=True)
 
-        # Step 2: Ensure that no cases were marked as failed: if they did, remove them
-        # Remove None values from all_objective_outputs
-        successful_cases_indices = [
-            i for i, case in enumerate(cases) if case.success is not False
-        ]
-        all_objective_outputs = [
-            [
-                output
-                for i, output in enumerate(objective_outputs)
-                if i in successful_cases_indices
-            ]
-            for objective_outputs in all_objective_outputs
-        ]
-
-        # Update logging to reflect the removal of failed cases
-        logging.info(
-            f"Removed failed cases: proceeding with {len(successful_cases_indices)} successful case(s)"
-        )
-
-        if len(successful_cases_indices) == 0:
+        successful_cases = [c for c in cases if c.success is not False]
+        logging.info(f"Proceeding with {len(successful_cases)} successful case(s)")
+        if not successful_cases:
             return []
-        # Step 3: Execute post-processing steps for only successful cases
-        final_outputs = []
-        raw_outputs = []  # Add this to store raw values
-        for i, objective in enumerate(self.objectives):
-            logging.info(f"Post-processing objective '{objective.name}' outputs.")
-            # Filter cases and their outputs for successful cases only
-            successful_cases = [cases[i] for i in successful_cases_indices]
-            successful_outputs = all_objective_outputs[i]
 
-            # Store raw outputs before post-processing
-            raw_outputs.append(successful_outputs)
+        # Values were coerced to float at evaluate() time; data_for_case is
+        # an unwrapped lookup, no re-coercion needed.
+        final_outputs: list[list[float]] = [
+            [objective.data_for_case(c) for c in successful_cases]
+            for objective in self.objectives
+        ]
 
-            # Execute post-processing
-            post_processed_outputs = objective.batch_post_process(
-                successful_cases, successful_outputs, save_values=True
-            )
-            final_outputs.append(post_processed_outputs)
-
-        # Step 4: Save both raw and final objective outputs to case metadata
         for case_idx, case in enumerate(successful_cases):
-            objective_results = {}
-            raw_objective_results = {}
+            objective_results: dict[str, Any] = {}
             for obj_idx, objective in enumerate(self.objectives):
-                # Post-processed value
-                value = coerce_objective_scalar(
-                    final_outputs[obj_idx][case_idx],
-                    label=f"Post-processed objective '{objective.name}' output",
-                )
                 objective_results[objective.name] = {
-                    "value": value,
+                    "value": final_outputs[obj_idx][case_idx],
                     "minimize": objective.minimize,
                 }
-
-                # Raw value (before post-processing)
-                raw_output = raw_outputs[obj_idx][case_idx]
-                if isinstance(objective, AggregateObjective):
-                    raw_output = objective.aggregate_outputs([raw_output])[0]
-
-                raw_objective_results[objective.name] = coerce_objective_scalar(
-                    raw_output,
-                    label=f"Raw objective '{objective.name}' output",
-                )
-
-            # Save post-processed values
+                if isinstance(objective, ScalarizedObjective):
+                    objective_results[objective.name]["components"] = {
+                        inner.name: inner.data_for_case(case)
+                        for inner in objective.objectives
+                    }
             case.update_metadata(objective_results, entry_header="objective-outputs")
-            # Save raw values
-            case.update_metadata(
-                raw_objective_results, entry_header="objective-values-raw"
-            )
             logging.debug(f"Saved objective outputs to metadata for {case.name}")
+
         return final_outputs
 
     def _objective_name_to_objective(
         self, objective_name: str
-    ) -> Union[Objective, AggregateObjective]:
+    ) -> Union[Objective, ScalarizedObjective]:
         """
         Args:
             objective_name (str): Objective name to map to the corresponding \
@@ -309,7 +262,7 @@ class Backend(ABC):
             ValueError: _description_
 
         Returns:
-            Union[Objective, AggregateObjective]: An Objective
+            Union[Objective, ScalarizedObjective]: An Objective
         """
         for objective in self.objectives:
             if objective.name == objective_name:
