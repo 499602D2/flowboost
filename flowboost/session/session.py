@@ -4,7 +4,7 @@ import logging
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional, Union
+from typing import Any, Iterable, Literal, Optional, Union
 
 from flowboost.config import config
 from flowboost.manager.manager import JobV2, Manager
@@ -12,6 +12,7 @@ from flowboost.openfoam.case import Case, path_is_foam_dir, unique_id
 from flowboost.openfoam.data import _BACKENDS as _DATA_BACKENDS
 from flowboost.openfoam.dictionary import DictionaryLink, DictionaryReader, Entry
 from flowboost.openfoam.types import FOAMType
+from flowboost.optimizer.objectives import Constraint, Objective, ScalarizedObjective
 from flowboost.optimizer.acquisition_offload import OFFLOAD_SCRIPT
 from flowboost.optimizer.backend import (
     Backend,
@@ -19,6 +20,8 @@ from flowboost.optimizer.backend import (
     OptimizationComplete,
 )
 from flowboost.optimizer.search_space import Dimension
+
+OptimizationObjective = Union[Objective, ScalarizedObjective]
 
 
 class Session:
@@ -59,8 +62,10 @@ class Session:
                 session restarts. Note: this mutates ``torch``'s global RNG \
                 state, which may affect user code that depends on it in the \
                 same process. Defaults to None (non-deterministic).
-            max_evaluations (Optional[int], optional): Maximum number of evaluations \
-                before stopping optimization. Defaults to None (no limit).
+            max_evaluations (Optional[int], optional): Maximum number of attempted \
+                case evaluations before stopping optimization. Completed failed \
+                cases and pending submitted cases both count against this cap. \
+                Defaults to None (no limit).
             target_value (Optional[float], optional): Target objective value to reach. \
                 Optimization stops when this value is achieved. Defaults to None.
             target_objective (Optional[str], optional): Name of objective to check \
@@ -109,6 +114,78 @@ class Session:
             logging.info(f"Session created ({self.data_dir})")
             self.persist()
 
+    def set_search_space(
+        self, dimensions: Union[Dimension, Iterable[Dimension]]
+    ) -> "Session":
+        """Register the case parameters the optimizer is allowed to vary.
+
+        Each Dimension should point at an OpenFOAM dictionary entry on the
+        template case. Accepts either a single Dimension or an iterable of
+        Dimensions. Returns the Session so calls can be chained.
+        """
+        if isinstance(dimensions, Dimension):
+            dimensions = [dimensions]
+        self.backend.set_search_space(list(dimensions))
+        return self
+
+    def set_objectives(
+        self,
+        objectives: Union[OptimizationObjective, Iterable[OptimizationObjective]],
+    ) -> "Session":
+        """Register the quantities the optimizer should optimize.
+
+        Accepts a single Objective, a single ScalarizedObjective, or an
+        iterable of Objectives. Constraints should be registered separately
+        with set_constraints(); they are tracked feasibility metrics, not
+        optimization targets. Returns the Session so calls can be chained.
+        """
+        if isinstance(objectives, (Objective, ScalarizedObjective)):
+            objectives = [objectives]
+        self.backend.set_objectives(list(objectives))
+        return self
+
+    def set_constraints(
+        self, constraints: Union[Constraint, Iterable[Constraint]]
+    ) -> "Session":
+        """Register feasibility bounds that guide optimizer suggestions.
+
+        Constraints are evaluated alongside objectives and passed to the
+        backend as outcome constraints, but they are not optimized directly.
+        Accepts either a single Constraint or an iterable of Constraints.
+        Returns the Session so calls can be chained.
+        """
+        self.backend.set_constraints(constraints)
+        return self
+
+    def configure_optimization(
+        self,
+        *,
+        objectives: Union[OptimizationObjective, Iterable[OptimizationObjective]],
+        search_space: Union[Dimension, Iterable[Dimension]],
+        constraints: Optional[Union[Constraint, Iterable[Constraint]]] = None,
+    ) -> "Session":
+        """Configure the optimizer's public problem definition in one call.
+
+        Use this for the common setup step after defining Objectives,
+        optional Constraints, and search-space Dimensions:
+
+            session.configure_optimization(
+                objectives=[lift, drag],
+                constraints=[pressure],
+                search_space=[angle, speed],
+            )
+
+        The method delegates to set_objectives(), set_constraints(), and
+        set_search_space() so their validation and backend behavior stay
+        identical. Backend-specific knobs such as initialization_trials remain
+        available through session.backend.
+        """
+        self.set_objectives(objectives)
+        if constraints is not None:
+            self.set_constraints(constraints)
+        self.set_search_space(search_space)
+        return self
+
     def get_all_cases(self, include_failed: bool = True) -> list[Case]:
         """
         Get finished and pending cases in one list.
@@ -120,6 +197,20 @@ class Session:
             self.get_finished_cases(include_failed=include_failed)
             + self.get_pending_cases()
         )
+
+    def _remaining_evaluation_budget(self) -> Optional[int]:
+        """Return how many additional case submissions fit in max_evaluations.
+
+        max_evaluations is an attempt budget: failed completed cases and
+        pending submitted cases both consume it.
+        """
+        if self.max_evaluations is None:
+            return None
+
+        committed_cases = len(self.get_finished_cases(include_failed=True)) + len(
+            self.get_pending_cases()
+        )
+        return self.max_evaluations - committed_cases
 
     def get_finished_cases(
         self, include_failed: bool = False, batch_process: bool = False
@@ -246,7 +337,7 @@ class Session:
                     )
                     continue
 
-                Case(
+                Case.try_restoring(
                     case_dest, data_backend=self.dataframe_format
                 ).post_evaluation_update(job.to_dict())
                 if not self.job_manager.finalize_job(job):
@@ -260,6 +351,34 @@ class Session:
                 self._write_designs_log()
                 logging.info("Optimization complete!")
                 return
+
+            remaining_budget = self._remaining_evaluation_budget()
+            if remaining_budget is not None:
+                if remaining_budget <= 0:
+                    if self.get_pending_cases():
+                        logging.info(
+                            "Maximum evaluation budget is committed; "
+                            "waiting for pending jobs"
+                        )
+                        continue
+
+                    logging.info(
+                        "Maximum evaluation budget is committed - stopping optimization"
+                    )
+                    self._write_designs_log()
+                    logging.info("Optimization complete!")
+                    return
+
+                if free_slots > remaining_budget:
+                    logging.info(
+                        f"Capping new cases to remaining evaluation budget: "
+                        f"{remaining_budget}/{self.max_evaluations}"
+                    )
+                    free_slots = remaining_budget
+
+            if free_slots <= 0:
+                logging.info("No free job slots available")
+                continue
 
             logging.info("Entering optimizer loop")
             try:
@@ -806,7 +925,7 @@ class Session:
             bool: True if optimization should stop, False otherwise
         """
         finished_cases = self.get_finished_cases(
-            include_failed=False,
+            include_failed=True,
             batch_process=self.target_value is not None,
         )
 
@@ -824,6 +943,12 @@ class Session:
             if not self.backend.objectives:
                 logging.warning("No objectives configured - cannot check target value")
                 return False
+
+            finished_cases = [
+                case
+                for case in finished_cases
+                if (case.success or case.success is None)
+            ]
 
             # Determine which objective to check
             if self.target_objective:
@@ -887,9 +1012,9 @@ class Session:
             by_objective (Optional[str]): Name of objective to rank by. If None, \
                 uses the first objective. Defaults to None.
         """
-        # Get finished and successful cases
+        # Use batch_process=True so inner ScalarizedObjective values get cached
         finished_cases = self.get_finished_cases(
-            include_failed=False, batch_process=False
+            include_failed=False, batch_process=True
         )
 
         if not finished_cases:
@@ -911,58 +1036,106 @@ class Session:
         else:
             objective = self.backend.objectives[0]
 
-        # Extract objective values for all cases from metadata
+        # Always rank by the top-level objective (including scalarized sum)
+        rank_objective = objective
+        is_scalarized = isinstance(objective, ScalarizedObjective)
+
+        # Columns: if scalarized, show [scalarized, inner..., other objectives]
+        # if not scalarized, show [objective, other objectives]
+        if is_scalarized:
+            inner_objectives = list(objective.objectives)
+            display_objectives = [objective] + inner_objectives
+        else:
+            display_objectives = [objective]
+
+        display_names = {o.name for o in display_objectives}
+        other_objectives = [
+            obj
+            for obj in self.backend.objectives
+            if obj.name not in display_names
+            and not isinstance(obj, ScalarizedObjective)
+        ]
+        all_display_cols = display_objectives + other_objectives
+
+        def _get_obj_value(case: Case, obj, metadata: dict) -> Optional[float]:
+            """Try metadata first, then fall back to cached data_for_case value."""
+            obj_outputs = metadata.get("objective-outputs", {})
+            val = obj_outputs.get(obj.name, {}).get("value")
+            if val is None:
+                val = obj.data_for_case(case)
+            return val
+
+        # Extract ranking values for all cases
         case_scores = []
         for case in finished_cases:
             metadata = case.read_metadata()
             if not metadata:
                 continue
 
-            obj_outputs = metadata.get("objective-outputs", {})
-            value = obj_outputs.get(objective.name, {}).get("value")
-
+            value = _get_obj_value(case, rank_objective, metadata)
             if value is not None:
                 gen_index = metadata.get("generation_index", "99999.99")
                 case_scores.append((case, value, gen_index))
 
         if not case_scores:
-            print(f"No valid objective values found for '{objective.name}'")
+            print(f"No valid objective values found for '{rank_objective.name}'")
             return
 
+        constraints = getattr(self.backend, "constraints", []) or []
+
         if n is None:
-            # Show all in submission order
-            case_scores.sort(key=lambda x: x[2])  # Sort by generation_index
+            case_scores.sort(key=lambda x: x[2])
             display_cases = case_scores
-            header = f"=== All Designs in Submission Order (by '{objective.name}') ==="
+            header = "=== All Designs in Submission Order ==="
         else:
-            reverse = not objective.minimize  # Higher is better if maximizing
+            reverse = not rank_objective.minimize
             case_scores.sort(key=lambda x: x[1], reverse=reverse)
             display_cases = case_scores[: min(n, len(case_scores))]
-            header = f"=== Top {len(display_cases)} Designs (by '{objective.name}') ==="
-
-        other_objectives = [
-            obj for obj in self.backend.objectives if obj.name != objective.name
-        ]
+            header = f"=== Top {len(display_cases)} Designs (ranked by '{rank_objective.name}') ==="
 
         COL_RANK = 6
         COL_NAME = 35
         COL_OBJ = 18
+        COL_CON = 18
         COL_PARAMS = 30
-        n_obj_cols = 1 + len(other_objectives)
+        n_obj_cols = len(all_display_cols)
+        n_con_cols = len(constraints)
+
+        def _obj_header_label(obj) -> str:
+            # Mark inner objectives visually with indentation
+            if is_scalarized and obj.name in {o.name for o in inner_objectives}:
+                return f"  {obj.name}".ljust(COL_OBJ)
+            return obj.name.ljust(COL_OBJ)
+
+        def _con_header_label(con: Constraint) -> str:
+            bounds = []
+            if con.gte is not None:
+                bounds.append(f">={con.gte}")
+            if con.lte is not None:
+                bounds.append(f"<={con.lte}")
+            label = f"{con.name}[{','.join(bounds)}]" if bounds else con.name
+            return label.ljust(COL_CON)
 
         print(f"\n{header}")
-        obj_header = f"{objective.name:<{COL_OBJ}}" + "".join(
-            f"{obj.name:<{COL_OBJ}}" for obj in other_objectives
+        obj_header = "".join(_obj_header_label(obj) for obj in all_display_cols)
+        con_header = "".join(_con_header_label(con) for con in constraints)
+        print(
+            f"{'Rank':<{COL_RANK}} {'Case Name':<{COL_NAME}} {obj_header}{con_header} {'Parameters'}"
         )
         print(
-            f"{'Rank':<{COL_RANK}} {'Case Name':<{COL_NAME}} {obj_header} {'Parameters'}"
+            "-"
+            * (
+                COL_RANK
+                + COL_NAME
+                + COL_OBJ * n_obj_cols
+                + COL_CON * n_con_cols
+                + COL_PARAMS
+            )
         )
-        print("-" * (COL_RANK + COL_NAME + COL_OBJ * n_obj_cols + COL_PARAMS))
 
         for rank, (case, value, gen_index) in enumerate(display_cases, 1):
             metadata = case.read_metadata()
 
-            # Get parameter values
             params = []
             if metadata and "optimizer-suggestion" in metadata:
                 opt_sugg = metadata["optimizer-suggestion"]
@@ -974,19 +1147,31 @@ class Session:
                 ]
             params_str = ", ".join(params) if params else "N/A"
 
-            obj_values_str = f"{value:<18.6f}"
-
-            # Other objectives' values
+            obj_values_str = ""
+            con_values_str = ""
             if metadata:
-                obj_outputs = metadata.get("objective-outputs", {})
-                for obj in other_objectives:
-                    other_val = obj_outputs.get(obj.name, {}).get("value")
-                    if other_val is not None:
-                        obj_values_str += f"{other_val:<18.6f}"
-                    else:
-                        obj_values_str += f"{'N/A':<18}"
+                for obj in all_display_cols:
+                    col_val = _get_obj_value(case, obj, metadata)
+                    obj_values_str += (
+                        f"{col_val:<{COL_OBJ}.6f}"
+                        if col_val is not None
+                        else f"{'N/A':<{COL_OBJ}}"
+                    )
 
-            print(f"{rank:<6} {case.name:<35} {obj_values_str} {params_str}")
+                con_outputs = metadata.get("constraint-outputs", {})
+                for con in constraints:
+                    col_val = con_outputs.get(con.name, {}).get("value")
+                    if col_val is None:
+                        col_val = con.data_for_case(case)
+                    con_values_str += (
+                        f"{col_val:<{COL_CON}.6f}"
+                        if col_val is not None
+                        else f"{'N/A':<{COL_CON}}"
+                    )
+
+            print(
+                f"{rank:<6} {case.name:<35} {obj_values_str}{con_values_str} {params_str}"
+            )
 
         print()
 
@@ -994,7 +1179,7 @@ class Session:
         """
         Writes a JSON file to the session data directory containing all
         completed designs in chronological (submission) order, with their
-        parameters and raw objective values.
+        parameters, raw objective values, and constraint values.
 
         The file is overwritten on each call, always reflecting the full
         current state.
@@ -1002,14 +1187,31 @@ class Session:
         Args:
             fname (str): Output filename. Defaults to 'designs.json'.
         """
+        # batch_process=True so inner objective values get cached on the objective objects
         finished_cases = self.get_finished_cases(
-            include_failed=False, batch_process=False
+            include_failed=False, batch_process=True
         )
 
         if not finished_cases:
             return
 
         designs = []
+        constraints = getattr(self.backend, "constraints", []) or []
+
+        def objective_log_entry(obj_data: dict[str, Any]) -> dict[str, Any]:
+            """Keep the designs log aligned with objective-outputs metadata."""
+            return {
+                key: obj_data[key]
+                for key in (
+                    "value",
+                    "minimize",
+                    "gte",
+                    "lte",
+                    "components",
+                    "component_bounds",
+                )
+                if key in obj_data
+            }
 
         for case in finished_cases:
             metadata = case.read_metadata()
@@ -1026,10 +1228,47 @@ class Session:
             objectives = {}
             if "objective-outputs" in metadata:
                 for obj_name, obj_data in metadata["objective-outputs"].items():
-                    objectives[obj_name] = {
-                        "value": obj_data.get("value"),
-                        "minimize": obj_data.get("minimize"),
-                    }
+                    objectives[obj_name] = objective_log_entry(obj_data)
+
+            # For ScalarizedObjectives, annotate with is_scalarized + components
+            # Inner values come from the objective cache (populated by batch_process above)
+            for obj in self.backend.objectives:
+                if isinstance(obj, ScalarizedObjective):
+                    objectives[obj.name] = objectives.get(obj.name, {})
+                    objectives[obj.name]["is_scalarized"] = True
+                    metadata_components = objectives[obj.name].get("components", {})
+                    objectives[obj.name]["components"] = {}
+                    for inner_obj in obj.objectives:
+                        # First try metadata (in case backend stores inner values there)
+                        inner_val = objectives.get(inner_obj.name)
+                        if inner_val is not None:
+                            objectives[obj.name]["components"][inner_obj.name] = (
+                                inner_val
+                            )
+                        elif inner_obj.name in metadata_components:
+                            objectives[obj.name]["components"][inner_obj.name] = {
+                                "value": metadata_components[inner_obj.name],
+                                "minimize": inner_obj.minimize,
+                            }
+                        else:
+                            # Fall back to cached value from batch_process evaluation
+                            cached = inner_obj.data_for_case(case)
+                            if cached is not None:
+                                objectives[obj.name]["components"][inner_obj.name] = {
+                                    "value": cached,
+                                    "minimize": inner_obj.minimize,
+                                }
+
+            # Constraint values
+            constraints_out = {}
+            con_outputs = metadata.get("constraint-outputs", {})
+            for con in constraints:
+                con_data = con_outputs.get(con.name, {})
+                constraints_out[con.name] = {
+                    "value": con_data.get("value"),
+                    "gte": con.gte,
+                    "lte": con.lte,
+                }
 
             designs.append(
                 {
@@ -1038,6 +1277,7 @@ class Session:
                     "created_at": str(metadata.get("created_at", "")),
                     "parameters": params,
                     "objectives": objectives,
+                    "constraints": constraints_out,
                 }
             )
 

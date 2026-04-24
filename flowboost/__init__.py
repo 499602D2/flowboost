@@ -8,8 +8,9 @@ if TYPE_CHECKING:
     from flowboost.openfoam.dictionary import Dictionary as Dictionary
     from flowboost.openfoam.runtime import get_runtime as foam_runtime
     from flowboost.optimizer.objectives import (
-        ScalarizedObjective as ScalarizedObjective,
+        Constraint as Constraint,
         Objective as Objective,
+        ScalarizedObjective as ScalarizedObjective,
     )
     from flowboost.optimizer.search_space import Dimension as Dimension
     from flowboost.session.session import Session as Session
@@ -22,6 +23,7 @@ def __getattr__(name):
         "PolarsData": "flowboost.openfoam.data",
         "Dictionary": "flowboost.openfoam.dictionary",
         "Dimension": "flowboost.optimizer.search_space",
+        "Constraint": "flowboost.optimizer.objectives",
         "Objective": "flowboost.optimizer.objectives",
         "ScalarizedObjective": "flowboost.optimizer.objectives",
         "Manager": "flowboost.manager.manager",
@@ -42,14 +44,15 @@ def __getattr__(name):
 
 
 __all__ = [
-    "ScalarizedObjective",
     "Case",
+    "Constraint",
     "Dictionary",
     "Dimension",
     "Manager",
     "Objective",
     "PandasData",
     "PolarsData",
+    "ScalarizedObjective",
     "Session",
     "foam_runtime",
 ]

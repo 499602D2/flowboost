@@ -31,7 +31,7 @@ class Manager(ABC):
 
         # Limits
         self.job_limit: int = job_limit
-        self.monitoring_interval: int = 60
+        self.monitoring_interval: float = 60.0
 
         # Currently tracked jobs
         self.job_pool: set[JobV2] = set()

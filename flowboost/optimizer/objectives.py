@@ -7,84 +7,23 @@ from flowboost.openfoam.case import Case
 from flowboost.optimizer.scalars import coerce_objective_scalar
 
 
-class Objective:
-    """A named optimization objective that evaluates a Case and returns a
-    scalar value.
-
-    Outcome standardization is the optimizer backend's job (Ax wraps every
-    metric in StandardizeY + BoTorch's Standardize). Don't add normalization
-    here. If your measurement is naturally non-linear (log-distributed drag,
-    say), pass `static_transform=math.log` — a pure float→float function,
-    applied per evaluation, no fitting, no state.
+class _EvaluatedMetric:
+    """Cache + lookup machinery shared by every class that produces a scalar
+    metric value from a Case (Objective, Constraint, ScalarizedObjective).
+    Subclasses must implement `evaluate()`; `metric_values_for_case()` may be
+    overridden when the class contributes more than one Ax metric.
+    Not part of the public API.
     """
 
-    def __init__(
-        self,
-        name: str,
-        minimize: bool,
-        objective_function: Callable,
-        objective_function_kwargs: Optional[dict[str, Any]] = None,
-        threshold: Optional[float] = None,
-        static_transform: Optional[Callable[[float], float]] = None,
-    ) -> None:
-        """An optimization objective for an OpenFOAM simulation.
-
-        Args:
-            name: Identifier for the objective. Must be unique across all
-                metrics in the experiment (including those wrapped in a
-                ScalarizedObjective).
-            minimize: True to minimize, False to maximize.
-            objective_function: Callable taking a Case (and optional kwargs)
-                and returning a scalar. Returning None marks the case failed.
-            objective_function_kwargs: Extra kwargs passed through to
-                `objective_function` on every call.
-            threshold: Optional MOO objective threshold (see Ax docs). Only
-                used by backends that support multi-objective Pareto fronts.
-            static_transform: Optional pure float→float transform applied to
-                each scalar output. Use for domain-driven re-expressions
-                (e.g. `math.log` for a log-distributed quantity). Not for
-                normalization — the backend handles that.
-        """
+    def __init__(self, name: str) -> None:
         self.name: str = name
         self.id: str = str(uuid4())
-        self.minimize: bool = minimize
-        self.threshold: Optional[float] = threshold
-        self.objective_function: Callable = objective_function
-        self.objective_function_kwargs: dict[str, Any] = dict(
-            objective_function_kwargs or {}
-        )
-        self.static_transform: Optional[Callable[[float], float]] = static_transform
-
         self._values: dict[Case, float] = {}
 
     def evaluate(self, case: Case, save_value: bool = True) -> Optional[float]:
-        """Evaluate the objective for a single case.
-
-        Returns the (optionally transformed) scalar, or None if the case
-        failed or the objective function returned None.
-        """
-        if case.success is False:
-            logging.warning("Case has been marked as failed: not evaluating objective")
-            return None
-
-        if self.objective_function_kwargs:
-            raw = self.objective_function(case, **self.objective_function_kwargs)
-        else:
-            raw = self.objective_function(case)
-
-        if raw is None:
-            logging.warning(f"Objective function returned a None for {case}")
-            logging.warning("Marking case as failed and not storing output!")
-            case.mark_failed()
-            return None
-
-        value = self.static_transform(raw) if self.static_transform else raw
-        value = coerce_objective_scalar(value, label=f"Objective '{self.name}' output")
-
-        if save_value:
-            self._values[case] = value
-
-        return value
+        raise NotImplementedError(
+            "_EvaluatedMetric subclasses must implement evaluate()"
+        )
 
     def batch_evaluate(
         self, cases: list[Case], save_values: bool = True
@@ -96,16 +35,251 @@ class Objective:
         return self._values.get(case)
 
     def metric_values_for_case(self, case: Case) -> dict[str, float]:
-        """Return {metric_name: value} contributed by this objective for `case`.
-
-        Used by the backend to build `raw_data` for `tell()`. An empty dict
-        signals "no value available" (case failed or not yet evaluated).
-        """
+        """Return {metric_name: value} contributed for `case`. Empty dict means
+        no value available (case failed or not yet evaluated)."""
         v = self.data_for_case(case)
         return {} if v is None else {self.name: v}
 
 
-class ScalarizedObjective:
+class _CallableMetric(_EvaluatedMetric):
+    """Metric whose value comes from calling a user-supplied function on the
+    Case. The single-function-call evaluator factors out the shared machinery
+    between Objective and Constraint. Not part of the public API.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        objective_function: Callable,
+        objective_function_kwargs: Optional[dict[str, Any]] = None,
+        static_transform: Optional[Callable[[float], float]] = None,
+    ) -> None:
+        super().__init__(name)
+        self.objective_function: Callable = objective_function
+        self.objective_function_kwargs: dict[str, Any] = dict(
+            objective_function_kwargs or {}
+        )
+        self.static_transform: Optional[Callable[[float], float]] = static_transform
+
+    def _value_label(self) -> str:
+        return f"Metric '{self.name}' output"
+
+    def evaluate(self, case: Case, save_value: bool = True) -> Optional[float]:
+        if case.success is False:
+            logging.warning("Case has been marked as failed: not evaluating metric")
+            return None
+
+        if self.objective_function_kwargs:
+            raw = self.objective_function(case, **self.objective_function_kwargs)
+        else:
+            raw = self.objective_function(case)
+
+        if raw is None:
+            logging.warning(f"Metric function returned a None for {case}")
+            logging.warning("Marking case as failed and not storing output!")
+            case.mark_failed()
+            return None
+
+        value = self.static_transform(raw) if self.static_transform else raw
+        value = coerce_objective_scalar(value, label=self._value_label())
+
+        if save_value:
+            self._values[case] = value
+
+        return value
+
+
+def _validate_bounds(gte: Optional[float], lte: Optional[float], context: str) -> None:
+    if gte is not None and not math.isfinite(gte):
+        raise ValueError(
+            f"{context}: gte={gte!r} must be a finite number. Use `None` to "
+            f"indicate 'no lower bound' — NaN and ±inf are not accepted."
+        )
+    if lte is not None and not math.isfinite(lte):
+        raise ValueError(
+            f"{context}: lte={lte!r} must be a finite number. Use `None` to "
+            f"indicate 'no upper bound' — NaN and ±inf are not accepted."
+        )
+    if gte is not None and lte is not None:
+        if gte > lte:
+            raise ValueError(
+                f"{context}: gte={gte} > lte={lte} defines an empty feasible range."
+            )
+        if gte == lte:
+            raise ValueError(
+                f"{context}: gte={gte} == lte={lte} defines a single-point "
+                f"feasible range, which has no meaning for a soft outcome "
+                f"constraint on a continuous GP surrogate. For a tight "
+                f"tolerance around X, use gte=X-eps, lte=X+eps."
+            )
+
+
+class Objective(_CallableMetric):
+    """A named optimization objective that evaluates a Case and returns a
+    scalar value.
+
+    Outcome standardization is the optimizer backend's job (Ax wraps every
+    metric in StandardizeY + BoTorch's Standardize). Don't add normalization
+    here. If your measurement is naturally non-linear (log-distributed drag,
+    say), pass `static_transform=math.log` — a pure float→float function,
+    applied per evaluation, no fitting, no state.
+
+    Objectives can carry a soft outcome bound via `gte`/`lte`. The bound
+    applies to the same measurement the objective optimizes (e.g. "minimize
+    drag, but also keep drag ≤ 0.05"). Under the hood this becomes a derived
+    tracking metric named ``{name}__bound`` with an `OutcomeConstraint`
+    pointing to it; Ax can't attach a constraint to an objective metric
+    directly, so the derived name is the workaround. For a bound on a metric
+    that isn't an optimization target, use a standalone `Constraint`.
+    """
+
+    BOUND_METRIC_SUFFIX = "__bound"
+
+    def __init__(
+        self,
+        name: str,
+        minimize: bool,
+        objective_function: Callable,
+        objective_function_kwargs: Optional[dict[str, Any]] = None,
+        threshold: Optional[float] = None,
+        static_transform: Optional[Callable[[float], float]] = None,
+        gte: Optional[float] = None,
+        lte: Optional[float] = None,
+    ) -> None:
+        """An optimization objective for an OpenFOAM simulation.
+
+        Args:
+            name: Identifier for the objective. Must be unique across all
+                metrics in the experiment (including those wrapped in a
+                ScalarizedObjective and any Constraints). If `gte` or `lte`
+                is set, the derived bound metric name ``{name}__bound`` must
+                also not collide with another registered metric.
+            minimize: True to minimize, False to maximize.
+            objective_function: Callable taking a Case (and optional kwargs)
+                and returning a scalar. Returning None marks the case failed.
+            objective_function_kwargs: Extra kwargs passed through to
+                `objective_function` on every call.
+            threshold: Optional MOO objective threshold (see Ax docs). Only
+                used by backends that support multi-objective Pareto fronts.
+            static_transform: Optional pure float→float transform applied to
+                each scalar output. Use for domain-driven re-expressions
+                (e.g. `math.log` for a log-distributed quantity). Not for
+                normalization — the backend handles that.
+            gte: Optional soft lower bound on this objective's value
+                (absolute, not relative). Steers the optimizer away from
+                regions where the bound is violated without hard-rejecting.
+            lte: Optional soft upper bound. Same semantics as `gte`.
+        """
+        _validate_bounds(gte, lte, context=f"Objective {name!r}")
+
+        super().__init__(
+            name=name,
+            objective_function=objective_function,
+            objective_function_kwargs=objective_function_kwargs,
+            static_transform=static_transform,
+        )
+        self.minimize: bool = minimize
+        self.threshold: Optional[float] = threshold
+        self.gte: Optional[float] = gte
+        self.lte: Optional[float] = lte
+
+    @property
+    def has_bounds(self) -> bool:
+        return self.gte is not None or self.lte is not None
+
+    @property
+    def bound_metric_name(self) -> str:
+        """Name of the derived tracking metric that carries this objective's
+        soft bound at the Ax layer. Only meaningful when `has_bounds` is True.
+        """
+        return f"{self.name}{self.BOUND_METRIC_SUFFIX}"
+
+    def _value_label(self) -> str:
+        return f"Objective '{self.name}' output"
+
+    def metric_values_for_case(self, case: Case) -> dict[str, float]:
+        """For a bounded Objective, emit both the objective metric and the
+        derived bound metric in the output dict. Ax expects raw_data to cover
+        every registered metric, including the tracking metric that holds the
+        bound.
+        """
+        v = self.data_for_case(case)
+        if v is None:
+            return {}
+        out = {self.name: v}
+        if self.has_bounds:
+            out[self.bound_metric_name] = v
+        return out
+
+
+class Constraint(_CallableMetric):
+    """A measurable quantity used to *steer* the optimizer rather than be
+    optimized for.
+
+    A Constraint registers a tracking metric with the backend (Ax: via
+    `experiment.add_tracking_metric`) and attaches a soft outcome constraint
+    to it. The optimizer evaluates the constraint metric on every case and is
+    discouraged from proposing regions where the bound is violated — but it
+    is not a hard reject; the backend's acquisition function applies a
+    penalty.
+
+    Use this when you have a measurement that should keep the optimizer in a
+    sensible region of the design space without it being one of the things
+    you're trying to push up or down (e.g. "pressure must stay ≥ 45.0 while
+    we minimize heat loss and heat flux").
+
+    Bounds are absolute. Ax's underlying `OutcomeConstraint` defaults to
+    relative bounds (interpreted as a percentage relative to a baseline arm),
+    which would silently change the meaning of every `gte`/`lte` users supply
+    here; flowboost intentionally inverts that default. Relative bounds are
+    not currently exposed — open an issue if you need them.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        objective_function: Callable,
+        gte: Optional[float] = None,
+        lte: Optional[float] = None,
+        objective_function_kwargs: Optional[dict[str, Any]] = None,
+        static_transform: Optional[Callable[[float], float]] = None,
+    ) -> None:
+        """A constraint-only metric.
+
+        Args:
+            name: Identifier for the constraint metric. Must be unique across
+                all metrics in the experiment.
+            objective_function: Callable taking a Case (and optional kwargs)
+                and returning the constraint metric's scalar value.
+            gte: Optional lower bound (absolute, not relative). At least one
+                of `gte` or `lte` must be supplied — a Constraint with no
+                bound has no effect.
+            lte: Optional upper bound (absolute, not relative).
+            objective_function_kwargs: Extra kwargs passed to the function.
+            static_transform: Optional pure float→float transform applied to
+                each output before the bound is checked.
+        """
+        if gte is None and lte is None:
+            raise ValueError(
+                f"Constraint {name!r} requires at least one of `gte` or `lte`. "
+                f"Without a bound, a constraint has no effect on the optimizer."
+            )
+        _validate_bounds(gte, lte, context=f"Constraint {name!r}")
+
+        super().__init__(
+            name=name,
+            objective_function=objective_function,
+            objective_function_kwargs=objective_function_kwargs,
+            static_transform=static_transform,
+        )
+        self.gte: Optional[float] = gte
+        self.lte: Optional[float] = lte
+
+    def _value_label(self) -> str:
+        return f"Constraint '{self.name}' output"
+
+
+class ScalarizedObjective(_EvaluatedMetric):
     """A weighted sum of multiple Objectives, optimized as a single scalar.
 
     Direction is encoded by signed weights: a negative weight flips the
@@ -172,7 +346,7 @@ class ScalarizedObjective:
                 "the threshold or use plain Objectives in MOO mode instead."
             )
 
-        self.name: str = name
+        super().__init__(name)
         self.minimize: bool = minimize
         self.objectives: list[Objective] = objectives
         self.weights: list[float] = (
@@ -229,8 +403,6 @@ class ScalarizedObjective:
         # Kept as a None attribute so call sites that read it don't break.
         self.threshold: Optional[float] = None
 
-        self._values: dict[Case, float] = {}
-
     def evaluate(self, case: Case, save_value: bool = True) -> Optional[float]:
         """Evaluate every inner objective and return the signed weighted sum.
 
@@ -258,28 +430,24 @@ class ScalarizedObjective:
 
         return scalar
 
-    def batch_evaluate(
-        self, cases: list[Case], save_values: bool = True
-    ) -> list[Optional[float]]:
-        return [self.evaluate(case=case, save_value=save_values) for case in cases]
-
-    def data_for_case(self, case: Case) -> Optional[float]:
-        """Return the cached scalarized value for a case."""
-        return self._values.get(case)
-
     def metric_values_for_case(self, case: Case) -> dict[str, float]:
-        """Return {inner_metric_name: value} for each inner objective.
+        """Return per-inner metric values for each inner objective, including
+        the derived bound alias ``{name}__bound`` for any inner carrying
+        `gte`/`lte`. Delegates to each inner's own `metric_values_for_case`
+        so the emit logic for bounds lives in one place.
 
         These are the per-metric values backends with native scalarization
-        (e.g. Ax) expect — Ax does the weighted sum itself at the acquisition
-        step.
+        (e.g. Ax) expect: Ax does the weighted sum itself at the acquisition
+        step, and reads bound tracking metrics separately for any
+        OutcomeConstraints. Overrides the base implementation, which would
+        return the scalar under the ScalarizedObjective's own name.
         """
         out: dict[str, float] = {}
         for obj in self.objectives:
-            v = obj.data_for_case(case)
-            if v is None:
+            inner_values = obj.metric_values_for_case(case)
+            if not inner_values:
                 return {}
-            out[obj.name] = v
+            out.update(inner_values)
         return out
 
 
