@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Union
 
 from flowboost.openfoam.case import Case
-from flowboost.optimizer.objectives import Objective, ScalarizedObjective
+from flowboost.optimizer.objectives import Constraint, Objective, ScalarizedObjective
 from flowboost.optimizer.search_space import Dimension
 
 DEFAULT_OFFLOAD_RESULT_FNAME = "acquisition_result.json"
@@ -16,6 +16,7 @@ class Backend(ABC):
     def __init__(self) -> None:
         self.type: str = self.__class__.__name__
         self.objectives: list[Union[Objective, ScalarizedObjective]] = []
+        self.constraints: list[Constraint] = []
         self.dimensions: list[Dimension] = []
         self.offload_acquisition: bool = False
         self.random_seed: int | None = None
@@ -56,9 +57,31 @@ class Backend(ABC):
     def set_parameter_constraints(self, constraints: list[str]):
         pass
 
-    @abstractmethod
-    def set_outcome_constraints(self, constraints: list[str]):
-        pass
+    def set_constraints(self, constraints: Union[Constraint, list[Constraint]]):
+        """Register Constraint objects: tracking metrics that bound the
+        optimizer's exploration without being optimization targets.
+
+        Accepts either a single Constraint or an iterable of Constraints.
+        Rejects non-Constraint items up front so misuse surfaces here instead
+        of crashing later with an AttributeError inside the evaluation loop.
+        """
+        if isinstance(constraints, Constraint):
+            constraints = [constraints]
+        try:
+            constraints_list = list(constraints)
+        except TypeError as e:
+            raise TypeError(
+                f"set_constraints expects a Constraint or an iterable of "
+                f"Constraints, got {type(constraints).__name__!r}."
+            ) from e
+        for i, c in enumerate(constraints_list):
+            if not isinstance(c, Constraint):
+                raise TypeError(
+                    f"set_constraints[{i}] must be a Constraint, got "
+                    f"{type(c).__name__!r}. Use set_objectives() for "
+                    f"Objective and ScalarizedObjective."
+                )
+        self.constraints = constraints_list
 
     @abstractmethod
     def attach_pending_cases(self, cases: list[Case]):
@@ -169,7 +192,9 @@ class Backend(ABC):
             "finished_cases": {
                 c.name: {
                     "parametrization": c.parametrize_configuration(self.dimensions),
-                    "objectives": c.objective_function_outputs(self.objectives),
+                    "objectives": c.objective_function_outputs(
+                        [*self.objectives, *self.constraints]
+                    ),
                 }
                 for c in finished_cases
             },
@@ -210,24 +235,25 @@ class Backend(ABC):
         pass
 
     def batch_process(self, cases: list[Case]) -> list[list[float]]:
-        """Evaluate every objective on `cases` and persist results to metadata.
+        """Evaluate every objective and constraint on `cases` and persist
+        results to metadata.
 
-        Returns a list-of-lists shaped [num_objectives][num_successful_cases].
-        For a ScalarizedObjective, the returned row is the scalarized value;
-        per-inner-metric values are still cached on each inner Objective for
-        the backend to retrieve when telling Ax.
+        Returns a list-of-lists shaped [num_objectives][num_successful_cases]
+        of objective values. Constraint values are persisted to metadata but
+        not part of the return shape (constraints aren't optimization targets).
         """
         for objective in self.objectives:
             logging.info(f"Processing objective '{objective.name}'")
             objective.batch_evaluate(cases, save_values=True)
+        for constraint in self.constraints:
+            logging.info(f"Processing constraint '{constraint.name}'")
+            constraint.batch_evaluate(cases, save_values=True)
 
         successful_cases = [c for c in cases if c.success is not False]
         logging.info(f"Proceeding with {len(successful_cases)} successful case(s)")
         if not successful_cases:
             return []
 
-        # Values were coerced to float at evaluate() time; data_for_case is
-        # an unwrapped lookup, no re-coercion needed.
         final_outputs: list[list[float]] = [
             [objective.data_for_case(c) for c in successful_cases]
             for objective in self.objectives
@@ -236,17 +262,48 @@ class Backend(ABC):
         for case_idx, case in enumerate(successful_cases):
             objective_results: dict[str, Any] = {}
             for obj_idx, objective in enumerate(self.objectives):
-                objective_results[objective.name] = {
+                entry: dict[str, Any] = {
                     "value": final_outputs[obj_idx][case_idx],
                     "minimize": objective.minimize,
                 }
                 if isinstance(objective, ScalarizedObjective):
-                    objective_results[objective.name]["components"] = {
+                    entry["components"] = {
                         inner.name: inner.data_for_case(case)
                         for inner in objective.objectives
                     }
+                    component_bounds: dict[str, dict[str, float]] = {}
+                    for inner in objective.objectives:
+                        bounds: dict[str, float] = {}
+                        if inner.gte is not None:
+                            bounds["gte"] = inner.gte
+                        if inner.lte is not None:
+                            bounds["lte"] = inner.lte
+                        if bounds:
+                            component_bounds[inner.name] = bounds
+                    if component_bounds:
+                        entry["component_bounds"] = component_bounds
+                if isinstance(objective, Objective):
+                    if objective.gte is not None:
+                        entry["gte"] = objective.gte
+                    if objective.lte is not None:
+                        entry["lte"] = objective.lte
+                objective_results[objective.name] = entry
             case.update_metadata(objective_results, entry_header="objective-outputs")
-            logging.debug(f"Saved objective outputs to metadata for {case.name}")
+
+            if self.constraints:
+                constraint_results: dict[str, Any] = {}
+                for constraint in self.constraints:
+                    entry: dict[str, Any] = {"value": constraint.data_for_case(case)}
+                    if constraint.gte is not None:
+                        entry["gte"] = constraint.gte
+                    if constraint.lte is not None:
+                        entry["lte"] = constraint.lte
+                    constraint_results[constraint.name] = entry
+                case.update_metadata(
+                    constraint_results, entry_header="constraint-outputs"
+                )
+
+            logging.debug(f"Saved metric outputs to metadata for {case.name}")
 
         return final_outputs
 
@@ -283,6 +340,26 @@ class Backend(ABC):
     def _dim_names_are_unique(self) -> bool:
         return len(set([o.name for o in self.dimensions])) == len(self.dimensions)
 
+    def _all_metric_names(self) -> list[str]:
+        """Every metric name registered with the backend, across objectives
+        (including inner objectives of a ScalarizedObjective, and the derived
+        bound tracking metric emitted for each bounded Objective at either
+        the top level or inside a ScalarizedObjective) and constraints.
+        Used for cross-uniqueness validation."""
+        names: list[str] = []
+        for obj in self.objectives:
+            if isinstance(obj, ScalarizedObjective):
+                for inner in obj.objectives:
+                    names.append(inner.name)
+                    if inner.has_bounds:
+                        names.append(inner.bound_metric_name)
+            else:
+                names.append(obj.name)
+                if isinstance(obj, Objective) and obj.has_bounds:
+                    names.append(obj.bound_metric_name)
+        names.extend(c.name for c in self.constraints)
+        return names
+
     def _verify_configuration(self):
         """Verify a few key-parts of the backend configuration.
 
@@ -297,6 +374,17 @@ class Backend(ABC):
 
         if not self._dim_names_are_unique():
             raise ValueError("All Dimension names must be unique")
+
+        # Constraint names must not clash with objective metric names — Ax
+        # registers them all in the same metric namespace.
+        all_names = self._all_metric_names()
+        if len(set(all_names)) != len(all_names):
+            duplicates = sorted({n for n in all_names if all_names.count(n) > 1})
+            raise ValueError(
+                f"Metric names must be unique across objectives "
+                f"(including inner objectives of any ScalarizedObjective) "
+                f"and constraints. Duplicates: {', '.join(duplicates)}"
+            )
 
 
 class OptimizationComplete(Exception):

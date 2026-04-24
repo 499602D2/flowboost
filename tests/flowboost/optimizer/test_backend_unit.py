@@ -13,15 +13,10 @@ def _make_objective(name="obj"):
     return Objective(name=name, minimize=True, objective_function=lambda c: 1.0)
 
 
-def _make_dim(name="dim"):
-    link = DictionaryLink("constant/foo").entry("bar")
-    return Dimension.range(name=name, link=link, lower=0.0, upper=1.0)
-
-
 class TestVerifyConfiguration:
-    def test_no_objectives_raises(self):
+    def test_no_objectives_raises(self, make_dim):
         backend = AxBackend()
-        backend.set_search_space([_make_dim()])
+        backend.set_search_space([make_dim()])
         with pytest.raises(ValueError, match="not defined"):
             backend._verify_configuration()
 
@@ -31,23 +26,23 @@ class TestVerifyConfiguration:
         with pytest.raises(ValueError, match="not defined"):
             backend._verify_configuration()
 
-    def test_duplicate_objective_names_raises(self):
+    def test_duplicate_objective_names_raises(self, make_dim):
         backend = AxBackend()
-        backend.set_search_space([_make_dim()])
+        backend.set_search_space([make_dim()])
         backend.set_objectives([_make_objective("dup"), _make_objective("dup")])
         with pytest.raises(ValueError, match="unique"):
             backend._verify_configuration()
 
-    def test_duplicate_dim_names_raises(self):
+    def test_duplicate_dim_names_raises(self, make_dim):
         backend = AxBackend()
         backend.set_objectives([_make_objective()])
-        backend.set_search_space([_make_dim("dup"), _make_dim("dup")])
+        backend.set_search_space([make_dim("dup"), make_dim("dup")])
         with pytest.raises(ValueError, match="unique"):
             backend._verify_configuration()
 
-    def test_valid_config_passes(self):
+    def test_valid_config_passes(self, make_dim):
         backend = AxBackend()
-        backend.set_search_space([_make_dim("x")])
+        backend.set_search_space([make_dim("x")])
         backend.set_objectives([_make_objective("y")])
         backend._verify_configuration()  # should not raise
 
@@ -65,15 +60,15 @@ class TestNameLookups:
         with pytest.raises(ValueError, match="not found"):
             backend._objective_name_to_objective("missing")
 
-    def test_dim_lookup(self):
+    def test_dim_lookup(self, make_dim):
         backend = AxBackend()
-        dim = _make_dim("target")
+        dim = make_dim("target")
         backend.set_search_space([dim])
         assert backend._dim_name_to_dimension("target") is dim
 
-    def test_dim_lookup_missing_raises(self):
+    def test_dim_lookup_missing_raises(self, make_dim):
         backend = AxBackend()
-        backend.set_search_space([_make_dim("other")])
+        backend.set_search_space([make_dim("other")])
         with pytest.raises(ValueError, match="not found"):
             backend._dim_name_to_dimension("missing")
 
@@ -113,10 +108,10 @@ class TestBackendCreate:
 
 
 class TestPostProcessSuggestionParametrizations:
-    def test_maps_str_keys_to_dimensions(self):
+    def test_maps_str_keys_to_dimensions(self, make_dim):
         backend = AxBackend()
-        dim_a = _make_dim("alpha")
-        dim_b = _make_dim("beta")
+        dim_a = make_dim("alpha")
+        dim_b = make_dim("beta")
         backend.set_search_space([dim_a, dim_b])
 
         parametrizations = {0: {"alpha": 1.0, "beta": 2.0}}
@@ -126,16 +121,16 @@ class TestPostProcessSuggestionParametrizations:
         assert result[0][dim_a] == 1.0
         assert result[0][dim_b] == 2.0
 
-    def test_unknown_key_raises(self):
+    def test_unknown_key_raises(self, make_dim):
         backend = AxBackend()
-        backend.set_search_space([_make_dim("known")])
+        backend.set_search_space([make_dim("known")])
 
         with pytest.raises(ValueError, match="not found"):
             backend._post_process_suggestion_parametrizations({0: {"unknown_dim": 1.0}})
 
-    def test_empty_parametrizations(self):
+    def test_empty_parametrizations(self, make_dim):
         backend = AxBackend()
-        backend.set_search_space([_make_dim()])
+        backend.set_search_space([make_dim()])
         assert backend._post_process_suggestion_parametrizations({}) == []
 
 
@@ -159,9 +154,9 @@ class TestDimToAxEdgeCases:
 
 
 class TestBatchProcessAllFailed:
-    def test_all_cases_failed_returns_empty(self, tmp_path):
+    def test_all_cases_failed_returns_empty(self, tmp_path, make_dim):
         backend = AxBackend()
-        backend.set_search_space([_make_dim()])
+        backend.set_search_space([make_dim()])
         obj = Objective("test", minimize=True, objective_function=lambda c: None)
         backend.set_objectives([obj])
 
@@ -178,9 +173,9 @@ class TestBatchProcessAllFailed:
 
 
 class TestBatchProcessSuccessStateSemantics:
-    def test_success_none_case_is_processed_and_persisted(self, tmp_path):
+    def test_success_none_case_is_processed_and_persisted(self, tmp_path, make_dim):
         backend = AxBackend()
-        backend.set_search_space([_make_dim()])
+        backend.set_search_space([make_dim()])
         backend.set_objectives([_make_objective("score")])
 
         case_dir = tmp_path / "case"
@@ -194,9 +189,11 @@ class TestBatchProcessSuccessStateSemantics:
         assert metadata is not None
         assert metadata["objective-outputs"]["score"]["value"] == 1.0
 
-    def test_success_none_case_is_processed_for_scalarized_objective(self, tmp_path):
+    def test_success_none_case_is_processed_for_scalarized_objective(
+        self, tmp_path, make_dim
+    ):
         backend = AxBackend()
-        backend.set_search_space([_make_dim()])
+        backend.set_search_space([make_dim()])
         backend.set_objectives(
             [
                 ScalarizedObjective(

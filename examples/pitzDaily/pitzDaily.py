@@ -72,7 +72,6 @@ def main():
         minimize=True,
         objective_function=pressure_drop_objective,
     )
-    session.backend.set_objectives([objective])
 
     # Search space: inlet turbulence parameters (both are scalars)
     inlet_k = Dictionary.link("0/k").entry("boundaryField/inlet/value")
@@ -93,7 +92,10 @@ def main():
         log_scale=True,
     )
 
-    session.backend.set_search_space([k_dim, eps_dim])
+    session.configure_optimization(
+        objectives=[objective],
+        search_space=[k_dim, eps_dim],
+    )
 
     # Use DockerLocal manager — runs simulations in per-job Docker containers
     if not session.job_manager:

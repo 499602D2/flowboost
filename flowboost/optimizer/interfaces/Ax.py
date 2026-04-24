@@ -10,8 +10,18 @@ from ax.core.base_trial import BaseTrial
 from ax.exceptions.core import DataRequiredError
 from ax.service.ax_client import AxClient, ObjectiveProperties, TParameterization
 
+from ax.core.metric import Metric
+from ax.core.objective import MultiObjective as AxMultiObjective
 from ax.core.objective import ScalarizedObjective as AxScalarizedObjective
-from ax.core.optimization_config import OptimizationConfig
+from ax.core.optimization_config import (
+    MultiObjectiveOptimizationConfig,
+    OptimizationConfig,
+)
+from ax.core.outcome_constraint import (
+    ObjectiveThreshold,
+    OutcomeConstraint,
+)
+from ax.core.types import ComparisonOp
 
 from flowboost.openfoam.case import Case
 from flowboost.optimizer.backend import Backend, OptimizationComplete
@@ -49,7 +59,6 @@ class AxBackend(Backend):
 
         # Ax-specific constraints
         self._parameter_constraints: list[str] = []
-        self._outcome_constraints: list[str] = []
 
         # Ax-specific features for noise
         self._SEM_by_objective: dict[str, Optional[float]] = {}
@@ -86,12 +95,14 @@ class AxBackend(Backend):
                     "the surrogate benefits from more sequential observations."
                 )
 
-        # Create a stateless optimizer client
+        # Create a stateless optimizer client. Outcome constraints aren't
+        # passed via the string-DSL kwarg here — they're installed structurally
+        # by `_install_optimization_config_overrides` once the experiment exists,
+        # so the metric references stay typed (vs. parsed from strings).
         self.client.create_experiment(
             parameters=self._get_ax_search_space(),
             objectives=self._get_ax_objectives(),
             parameter_constraints=self._parameter_constraints,
-            outcome_constraints=self._outcome_constraints,
             choose_generation_strategy_kwargs={
                 "num_initialization_trials": num_init,
                 "use_saasbo": self.SAASBO,
@@ -109,7 +120,7 @@ class AxBackend(Backend):
             },
         )
 
-        self._maybe_install_scalarized_objective()
+        self._install_optimization_config_overrides()
 
         # Outcome standardization is handled by Ax: the BoTorch generator's
         # default transform stack applies BilogY → StandardizeY before model
@@ -312,9 +323,6 @@ class AxBackend(Backend):
         """
         self._parameter_constraints = constraints
 
-    def set_outcome_constraints(self, constraints: list[str]):
-        self._outcome_constraints = constraints
-
     def attach_pending_cases(self, cases: list[Case]):
         if cases:
             logging.info(f"Attaching {len(cases)} pending case(s) to the model")
@@ -430,10 +438,14 @@ class AxBackend(Backend):
 
         # TODO handle failure criteria here
 
-        # Next, get the objective function outputs for each case
-        logging.info("Retrieving objective function outputs")
+        # Gather metric values for every registered objective AND constraint —
+        # Ax expects raw_data to cover all metrics it knows about, including
+        # tracking metrics referenced by outcome constraints. Missing any
+        # one of them silently marks the trial failed.
+        logging.info("Retrieving metric values for case completion")
+        registered_metrics = [*self.objectives, *self.constraints]
         case_objective_outputs: dict[Case, dict] = {
-            c: c.objective_function_outputs(self.objectives) for c in cases
+            c: c.objective_function_outputs(registered_metrics) for c in cases
         }
 
         logging.info(f"Ax search space: {self._get_ax_search_space()}")
@@ -618,7 +630,7 @@ class AxBackend(Backend):
         For top-level Objectives, the objective is the metric. For a top-level
         ScalarizedObjective, each inner Objective is registered as its own
         metric so Ax models them independently; the single-objective scalarized
-        OptimizationConfig is then installed by `_maybe_install_scalarized_objective`.
+        OptimizationConfig is then installed by `_install_optimization_config_overrides`.
         """
         ax_objectives: dict[str, ObjectiveProperties] = {}
         for objective in self.objectives:
@@ -634,34 +646,142 @@ class AxBackend(Backend):
 
         return ax_objectives
 
-    def _maybe_install_scalarized_objective(self) -> None:
-        """Swap in Ax's native ScalarizedObjective when the user asked for one.
+    def _install_optimization_config_overrides(self) -> None:
+        """Install structural overrides that AxClient.create_experiment can't
+        express directly: native ScalarizedObjective for the optimization
+        target, and OutcomeConstraints derived from gte/lte fields on
+        Objectives or pure Constraint instances.
 
-        AxClient.create_experiment treats multi-metric input as MOO by default;
-        we override the optimization_config so the inner metrics are scalarized
-        at the acquisition step. Each metric still has its own surrogate and
-        its own StandardizeY — that's the win over computing the weighted sum
-        upstream.
+        For each Constraint, also registers a tracking metric on the
+        experiment so Ax knows about the metric name when it appears in
+        raw_data during tell(). Without this registration, the trial is
+        silently marked failed by AxClient (it expects raw_data to cover
+        only registered metrics).
+
+        If neither overrides nor constraints are present, leaves Ax's default
+        config in place.
         """
         scalarized = [o for o in self.objectives if isinstance(o, ScalarizedObjective)]
-        if not scalarized:
+        bounded_objectives = list(self._iter_bounded_objectives())
+        if not scalarized and not self.constraints and not bounded_objectives:
             return
 
-        flowboost_obj = scalarized[0]
-        # Reuse the Metric objects Ax already registered for the inner
-        # objectives in `_get_ax_objectives`; constructing fresh ones here
-        # would re-encode `lower_is_better` and invite the two paths to drift.
-        metrics = [
-            self.client.experiment.metrics[inner.name]
-            for inner in flowboost_obj.objectives
-        ]
-        self.client.experiment.optimization_config = OptimizationConfig(
-            objective=AxScalarizedObjective(
+        # Register Constraint metrics as tracking metrics so they exist in
+        # experiment.metrics before we reference them in OutcomeConstraints
+        # (and so AxClient expects their values in raw_data).
+        for c in self.constraints:
+            if c.name not in self.client.experiment.metrics:
+                self.client.experiment.add_tracking_metric(Metric(name=c.name))
+
+        # Register derived bound metrics for Objectives carrying gte/lte.
+        # Ax rejects OutcomeConstraints attached to objective metrics, so the
+        # bound is hung off a sibling tracking metric whose value mirrors the
+        # objective's at tell() time.
+        for obj in bounded_objectives:
+            if obj.bound_metric_name not in self.client.experiment.metrics:
+                self.client.experiment.add_tracking_metric(
+                    Metric(name=obj.bound_metric_name)
+                )
+
+        # Pick the objective: existing one if no ScalarizedObjective override,
+        # otherwise build an Ax-native ScalarizedObjective referencing the
+        # already-registered inner metrics.
+        if scalarized:
+            flowboost_obj = scalarized[0]
+            metrics = [
+                self.client.experiment.metrics[inner.name]
+                for inner in flowboost_obj.objectives
+            ]
+            ax_objective = AxScalarizedObjective(
                 metrics=metrics,
                 weights=flowboost_obj.weights,
                 minimize=flowboost_obj.minimize,
             )
-        )
+        else:
+            ax_objective = self.client.experiment.optimization_config.objective
+
+        outcome_constraints = self._build_outcome_constraints()
+
+        # MultiObjective requires the MOO-flavored config (which carries the
+        # objective_thresholds field). Keep any thresholds Ax inferred for us
+        # at create_experiment time so we don't drop user-set ones.
+        if isinstance(ax_objective, AxMultiObjective):
+            existing = self.client.experiment.optimization_config
+            existing_thresholds: list[ObjectiveThreshold] = list(
+                getattr(existing, "objective_thresholds", []) or []
+            )
+            self.client.experiment.optimization_config = (
+                MultiObjectiveOptimizationConfig(
+                    objective=ax_objective,
+                    outcome_constraints=outcome_constraints,
+                    objective_thresholds=existing_thresholds,
+                )
+            )
+        else:
+            self.client.experiment.optimization_config = OptimizationConfig(
+                objective=ax_objective,
+                outcome_constraints=outcome_constraints,
+            )
+
+    def _build_outcome_constraints(self) -> list[OutcomeConstraint]:
+        """Build OutcomeConstraints from the gte/lte on each registered
+        Constraint and from the gte/lte on each bounded Objective (whose
+        bounds are hung off a derived tracking metric named
+        ``{obj.name}__bound``). Bounds are absolute (`relative=False`) — Ax
+        defaults to relative, which would silently change the meaning of
+        every constraint.
+
+        Assumes the relevant tracking metrics have already been registered
+        on the experiment.
+        """
+        constraints: list[OutcomeConstraint] = []
+        for c in self.constraints:
+            metric = self.client.experiment.metrics[c.name]
+            if c.gte is not None:
+                constraints.append(
+                    OutcomeConstraint(
+                        metric=metric, op=ComparisonOp.GEQ, bound=c.gte, relative=False
+                    )
+                )
+            if c.lte is not None:
+                constraints.append(
+                    OutcomeConstraint(
+                        metric=metric, op=ComparisonOp.LEQ, bound=c.lte, relative=False
+                    )
+                )
+        for obj in self._iter_bounded_objectives():
+            metric = self.client.experiment.metrics[obj.bound_metric_name]
+            if obj.gte is not None:
+                constraints.append(
+                    OutcomeConstraint(
+                        metric=metric,
+                        op=ComparisonOp.GEQ,
+                        bound=obj.gte,
+                        relative=False,
+                    )
+                )
+            if obj.lte is not None:
+                constraints.append(
+                    OutcomeConstraint(
+                        metric=metric,
+                        op=ComparisonOp.LEQ,
+                        bound=obj.lte,
+                        relative=False,
+                    )
+                )
+        return constraints
+
+    def _iter_bounded_objectives(self):
+        """Walk every `Objective` carrying `gte`/`lte`, whether registered
+        directly or as an inner term of a `ScalarizedObjective`. Each yielded
+        Objective has `has_bounds == True` and a `bound_metric_name`."""
+        for obj in self.objectives:
+            if isinstance(obj, ScalarizedObjective):
+                for inner in obj.objectives:
+                    if inner.has_bounds:
+                        yield inner
+            elif isinstance(obj, Objective) and obj.has_bounds:
+                yield obj
 
     def _dim_to_Ax_parameter_dict(self, dim: Dimension) -> dict[str, Any]:
         d: dict[str, Any] = {

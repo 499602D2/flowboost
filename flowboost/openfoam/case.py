@@ -22,7 +22,11 @@ from flowboost.optimizer.search_space import Dimension
 
 if TYPE_CHECKING:
     # Lazy imports for function argument typing
-    from flowboost.optimizer.objectives import Objective, ScalarizedObjective
+    from flowboost.optimizer.objectives import (
+        Constraint,
+        Objective,
+        ScalarizedObjective,
+    )
 
 DEFAULT_METADATA: str = "metadata.toml"
 GENERATION_INDEX_SORT_SENTINEL: str = "99999.99"
@@ -462,13 +466,15 @@ class Case:
         return entry.value
 
     def objective_function_outputs(
-        self, objectives: list[Union["Objective", "ScalarizedObjective"]]
+        self,
+        objectives: list[Union["Objective", "ScalarizedObjective", "Constraint"]],
     ) -> dict[str, float]:
         """Return {metric_name: value} for every metric this case contributes.
 
-        For a plain Objective the metric name is the objective's own name. For
-        a ScalarizedObjective each inner objective contributes its own metric
-        — Ax expects per-metric raw_data and does the scalarization itself.
+        Accepts the full set of metric-producing objects: plain Objectives,
+        a ScalarizedObjective (contributes one entry per inner objective), and
+        Constraints. The resulting dict is shaped exactly like the raw_data
+        Ax expects in `complete_trial`.
         """
         output_mapping: dict[str, float] = {}
 
@@ -476,7 +482,7 @@ class Case:
             metric_values = obj.metric_values_for_case(self)
             if not metric_values:
                 raise ValueError(
-                    f"Objective '{obj.name}' has no value for case {self}. The "
+                    f"Metric '{obj.name}' has no value for case {self}. The "
                     f"case has not been evaluated yet — run "
                     f"Backend.batch_process([case]) first, or fetch finished "
                     f"cases via Session.get_finished_cases(batch_process=True)."

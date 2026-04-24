@@ -10,7 +10,7 @@ from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
 from flowboost.optimizer.backend import OptimizationComplete
 from flowboost.optimizer.interfaces.Ax import AxBackend
-from flowboost.optimizer.objectives import Objective, ScalarizedObjective
+from flowboost.optimizer.objectives import Constraint, Objective, ScalarizedObjective
 from flowboost.optimizer.search_space import Dimension
 
 
@@ -33,16 +33,6 @@ def Ax_backend() -> AxBackend:
     # Add objective
     objective = Objective(
         name="test_objective", minimize=True, objective_function=lambda x: 1
-    )
-
-    # Define something to modify
-    dict_link = DictionaryLink("constant/chemistryProperties").entry(
-        "tabulation/tolerance"
-    )
-
-    # Add dimension for the dictionary entry
-    dim = Dimension.range(
-        name="test_dim", link=dict_link, lower=1e-5, upper=1e-1, log_scale=True
     )
 
     # Define something to modify
@@ -135,12 +125,12 @@ def test_tell_on_unevaluated_case_raises_clear_error(tmp_path):
     """Calling tell() with a case that hasn't been batch-processed used to
     blow up with 'output None for case ...' from deep inside Case; it should
     now point the caller at batch_process / get_finished_cases(batch_process=True)."""
-    unevaluated = _make_case(tmp_path, "unevaluated", value=0.5)
-    backend, _ = _make_simple_backend(unevaluated)
-    other = _make_case(tmp_path, "other", value=0.25)
+    seed_case = _make_case(tmp_path, "seed", value=0.5)
+    backend, _ = _make_simple_backend(seed_case)
+    unevaluated = _make_case(tmp_path, "unevaluated", value=0.25)
 
     with pytest.raises(ValueError, match="has not been evaluated"):
-        backend.tell([other])
+        backend.tell([unevaluated])
 
 
 @pytest.mark.slow
@@ -464,6 +454,98 @@ def test_offloaded_acquisition_accepts_duplicate_parameterizations(tmp_path):
     )
     output_path = tmp_path / "duplicate_acquisition_result.json"
 
+    AxBackend.offloaded_acquisition(
+        model_snapshot=model_snapshot,
+        data_snapshot=data_snapshot,
+        num_trials=1,
+        output_path=output_path,
+    )
+
+    result = json.loads(output_path.read_text())
+    assert result["optimizer"] == "AxBackend"
+    assert result["status_finished"] is False
+    assert len(result["parametrizations"]) == 1
+
+
+def test_offloaded_acquisition_round_trip_with_scalarized_objective_and_constraint(
+    tmp_path,
+):
+    case = _make_case(tmp_path, "scalarized-constrained", value=0.5)
+
+    component_a = Objective(
+        name="component_a",
+        minimize=True,
+        objective_function=lambda c: float(
+            c.read_metadata()["optimizer-suggestion"]["test_dim"]["value"]
+        ),
+    )
+    component_b = Objective(
+        name="component_b",
+        minimize=True,
+        objective_function=lambda c: (
+            2.0 * float(c.read_metadata()["optimizer-suggestion"]["test_dim"]["value"])
+        ),
+    )
+    scalarized = ScalarizedObjective(
+        name="scalarized",
+        minimize=True,
+        objectives=[component_a, component_b],
+        weights=[0.5, 0.5],
+    )
+    pressure = Constraint(
+        name="pressure",
+        objective_function=lambda c: (
+            1.0 - float(c.read_metadata()["optimizer-suggestion"]["test_dim"]["value"])
+        ),
+        gte=0.0,
+    )
+
+    backend = AxBackend()
+    backend.offload_acquisition = True
+    backend.random_seed = 0
+    backend.initialization_trials = 1
+    backend.set_search_space(
+        [
+            Dimension.range(
+                name="test_dim",
+                link=DictionaryLink("constant/chemistryProperties").entry(
+                    "tabulation/tolerance"
+                ),
+                lower=0.0,
+                upper=1.0,
+            )
+        ]
+    )
+    backend.set_objectives(scalarized)
+    backend.set_constraints([pressure])
+    backend.initialize()
+
+    scalarized.batch_evaluate([case])
+    pressure.batch_evaluate([case])
+
+    model_snapshot, data_snapshot = backend.prepare_for_acquisition_offload(
+        [case], [], tmp_path
+    )
+    snapshot_data = json.loads(data_snapshot.read_text())
+    objectives = snapshot_data["finished_cases"][case.name]["objectives"]
+    assert objectives == {
+        "component_a": 0.5,
+        "component_b": 1.0,
+        "pressure": 0.5,
+    }
+
+    restored = AxBackend.restore_from_state_snapshot(model_snapshot)
+    opt_cfg = restored.client.experiment.optimization_config
+    assert {metric.name for metric in opt_cfg.objective.metrics} == {
+        "component_a",
+        "component_b",
+    }
+    assert {
+        (oc.metric.name, oc.op.name, oc.bound, oc.relative)
+        for oc in opt_cfg.outcome_constraints
+    } == {("pressure", "GEQ", 0.0, False)}
+
+    output_path = tmp_path / "scalarized_constrained_acquisition_result.json"
     AxBackend.offloaded_acquisition(
         model_snapshot=model_snapshot,
         data_snapshot=data_snapshot,

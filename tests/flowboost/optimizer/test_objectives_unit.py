@@ -9,13 +9,6 @@ from flowboost.optimizer.objectives import Objective, ScalarizedObjective
 
 
 @pytest.fixture
-def case(tmp_path):
-    d = tmp_path / "test_case"
-    d.mkdir()
-    return Case(d)
-
-
-@pytest.fixture
 def failed_case(tmp_path):
     d = tmp_path / "failed_case"
     d.mkdir()
@@ -129,6 +122,86 @@ class TestObjectiveExceptionPropagation:
         obj = Objective("test", minimize=True, objective_function=key_error_fn)
         with pytest.raises(KeyError):
             obj.evaluate(case)
+
+
+class TestObjectiveBounds:
+    def test_defaults_are_none(self):
+        obj = Objective("f", minimize=True, objective_function=lambda c: 1.0)
+        assert obj.gte is None
+        assert obj.lte is None
+        assert obj.has_bounds is False
+
+    def test_gte_only(self):
+        obj = Objective("f", minimize=True, objective_function=lambda c: 1.0, gte=0.5)
+        assert (obj.gte, obj.lte) == (0.5, None)
+        assert obj.has_bounds is True
+
+    def test_lte_only(self):
+        obj = Objective("f", minimize=True, objective_function=lambda c: 1.0, lte=9.0)
+        assert (obj.gte, obj.lte) == (None, 9.0)
+        assert obj.has_bounds is True
+
+    def test_both_bounds(self):
+        obj = Objective(
+            "f", minimize=True, objective_function=lambda c: 1.0, gte=0.0, lte=9.0
+        )
+        assert (obj.gte, obj.lte) == (0.0, 9.0)
+        assert obj.has_bounds is True
+
+    def test_bound_metric_name(self):
+        obj = Objective(
+            "drag", minimize=True, objective_function=lambda c: 1.0, lte=0.05
+        )
+        assert obj.bound_metric_name == "drag__bound"
+
+    def test_rejects_inverted_bounds(self):
+        with pytest.raises(ValueError, match="empty feasible range"):
+            Objective(
+                "f", minimize=True, objective_function=lambda c: 1.0, gte=10.0, lte=5.0
+            )
+
+    def test_rejects_single_point_bounds(self):
+        with pytest.raises(ValueError, match="single-point feasible range"):
+            Objective(
+                "f", minimize=True, objective_function=lambda c: 1.0, gte=5.0, lte=5.0
+            )
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [float("nan"), float("inf"), float("-inf")],
+        ids=["nan", "pos_inf", "neg_inf"],
+    )
+    def test_rejects_non_finite_gte(self, bad_value):
+        with pytest.raises(ValueError, match="must be a finite number"):
+            Objective(
+                "f", minimize=True, objective_function=lambda c: 1.0, gte=bad_value
+            )
+
+    @pytest.mark.parametrize(
+        "bad_value",
+        [float("nan"), float("inf"), float("-inf")],
+        ids=["nan", "pos_inf", "neg_inf"],
+    )
+    def test_rejects_non_finite_lte(self, bad_value):
+        with pytest.raises(ValueError, match="must be a finite number"):
+            Objective(
+                "f", minimize=True, objective_function=lambda c: 1.0, lte=bad_value
+            )
+
+    def test_metric_values_for_case_emits_bound_alias(self, case):
+        obj = Objective(
+            "drag", minimize=True, objective_function=lambda c: 0.04, lte=0.05
+        )
+        obj.evaluate(case)
+        # The bounded Objective contributes both its own metric and the
+        # derived bound tracking metric under the same value, so Ax's raw_data
+        # covers the tracking metric the OutcomeConstraint references.
+        assert obj.metric_values_for_case(case) == {"drag": 0.04, "drag__bound": 0.04}
+
+    def test_metric_values_for_case_without_bounds_is_unchanged(self, case):
+        obj = Objective("drag", minimize=True, objective_function=lambda c: 0.04)
+        obj.evaluate(case)
+        assert obj.metric_values_for_case(case) == {"drag": 0.04}
 
 
 class TestScalarizedObjective:
@@ -352,3 +425,16 @@ class TestScalarizedObjectiveInnerValidation:
         obj = Objective("solo", minimize=True, objective_function=lambda c: 1.0)
         with pytest.raises(ValueError, match="duplicate inner objective names"):
             ScalarizedObjective("agg", minimize=True, objectives=[obj, obj])
+
+    def test_bounded_inner_objective_accepted(self):
+        """Inner Objectives may carry bounds. The bound attaches to a derived
+        tracking metric on the same inner name, so Ax never sees a constraint
+        on an objective metric directly. Semantics: 'optimize the scalarized
+        sum, subject to inner_a being within its bound'."""
+        objs = [
+            Objective("a", minimize=True, objective_function=lambda c: 1.0, lte=0.5),
+            Objective("b", minimize=True, objective_function=lambda c: 2.0),
+        ]
+        agg = ScalarizedObjective("agg", minimize=True, objectives=objs)
+        assert agg.objectives[0].has_bounds is True
+        assert agg.objectives[0].bound_metric_name == "a__bound"

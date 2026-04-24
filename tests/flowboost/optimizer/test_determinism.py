@@ -19,11 +19,12 @@ import pytest
 from flowboost.openfoam.case import Case
 from flowboost.openfoam.dictionary import DictionaryLink
 from flowboost.optimizer.interfaces.Ax import AxBackend
-from flowboost.optimizer.objectives import Objective
+from flowboost.optimizer.objectives import Constraint, Objective, ScalarizedObjective
 from flowboost.optimizer.search_space import Dimension
 
 SEED = 42
 N_CYCLES = 6
+SCALARIZED_CONSTRAINT_CYCLES = 8
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +76,70 @@ def _evaluate_and_tell(
     backend.tell(cases)
 
 
+def _evaluate_metrics_and_tell(
+    backend: AxBackend,
+    metrics: list[Objective | ScalarizedObjective | Constraint],
+    cases: list[Case],
+) -> None:
+    """Evaluate all metric producers the backend expects, then tell Ax."""
+    for metric in metrics:
+        metric.batch_evaluate(cases)
+    backend.tell(cases)
+
+
+def _make_scalarized_constrained_backend(
+    seed: int,
+) -> tuple[AxBackend, list[Objective | ScalarizedObjective | Constraint]]:
+    backend = AxBackend()
+    backend.random_seed = seed
+    backend.initialization_trials = 3
+
+    def _read(case, key):
+        return float(case.read_metadata()["optimizer-suggestion"][key]["value"])
+
+    lift_penalty = Objective(
+        name="lift_penalty",
+        minimize=True,
+        objective_function=lambda case: (_read(case, "x") - 1.0) ** 2,
+    )
+    drag = Objective(
+        name="drag",
+        minimize=True,
+        objective_function=lambda case: (_read(case, "y") + 0.5) ** 2,
+    )
+    scalarized = ScalarizedObjective(
+        name="score",
+        minimize=True,
+        objectives=[lift_penalty, drag],
+        weights=[0.6, 0.4],
+    )
+    pressure = Constraint(
+        name="pressure",
+        objective_function=lambda case: _read(case, "x") + _read(case, "y"),
+        gte=-1.0,
+    )
+
+    dims = [
+        Dimension.range(
+            name="x",
+            link=DictionaryLink("constant/setup").entry("x"),
+            lower=-3.0,
+            upper=3.0,
+        ),
+        Dimension.range(
+            name="y",
+            link=DictionaryLink("constant/setup").entry("y"),
+            lower=-3.0,
+            upper=3.0,
+        ),
+    ]
+
+    backend.set_search_space(dims)
+    backend.set_objectives(scalarized)
+    backend.set_constraints([pressure])
+    return backend, [scalarized, pressure]
+
+
 def _run_replayed(
     tmp_path,
     prefix: str,
@@ -106,6 +171,35 @@ def _run_replayed(
     return suggestions
 
 
+def _run_replayed_with_metrics(
+    tmp_path,
+    prefix: str,
+    make_backend_fn,
+    make_case_fn,
+    seed: int = SEED,
+    n_cycles: int = N_CYCLES,
+) -> list[dict[str, float]]:
+    all_cases: list[Case] = []
+    suggestions: list[dict[str, float]] = []
+
+    for cycle in range(n_cycles):
+        backend, metrics = make_backend_fn(seed)
+        backend.initialize()
+
+        if all_cases:
+            _evaluate_metrics_and_tell(backend, metrics, all_cases)
+
+        suggestion = backend.ask(max_cases=1)[0]
+        params = {dim.name: value for dim, value in suggestion.items()}
+        suggestions.append(params)
+
+        case = make_case_fn(tmp_path, f"{prefix}-{cycle:02d}", params)
+        all_cases.append(case)
+        _evaluate_metrics_and_tell(backend, metrics, all_cases)
+
+    return suggestions
+
+
 def _run_continuous(
     tmp_path,
     prefix: str,
@@ -133,6 +227,32 @@ def _run_continuous(
     return suggestions
 
 
+def _run_continuous_with_metrics(
+    tmp_path,
+    prefix: str,
+    make_backend_fn,
+    make_case_fn,
+    seed: int = SEED,
+    n_cycles: int = N_CYCLES,
+) -> list[dict[str, float]]:
+    backend, metrics = make_backend_fn(seed)
+    backend.initialize()
+
+    all_cases: list[Case] = []
+    suggestions: list[dict[str, float]] = []
+
+    for cycle in range(n_cycles):
+        suggestion = backend.ask(max_cases=1)[0]
+        params = {dim.name: value for dim, value in suggestion.items()}
+        suggestions.append(params)
+
+        case = make_case_fn(tmp_path, f"{prefix}-{cycle:02d}", params)
+        all_cases.append(case)
+        _evaluate_metrics_and_tell(backend, metrics, all_cases)
+
+    return suggestions
+
+
 def _assert_suggestions_match(
     label_a: str,
     label_b: str,
@@ -141,6 +261,10 @@ def _assert_suggestions_match(
     *,
     abs_tol: float = 1e-12,
 ) -> None:
+    assert len(suggestions_a) == len(suggestions_b), (
+        f"{label_a} produced {len(suggestions_a)} suggestion(s), "
+        f"{label_b} produced {len(suggestions_b)}"
+    )
     for cycle, (a, b) in enumerate(zip(suggestions_a, suggestions_b)):
         for key in a:
             assert a[key] == pytest.approx(b[key], abs=abs_tol), (
@@ -174,6 +298,35 @@ def test_continuous_vs_replayed_determinism(tmp_path, make_suggestion_case):
     )
 
     _assert_suggestions_match("continuous", "replayed", continuous, replayed)
+
+
+def test_scalarized_constraint_continuous_vs_replayed_determinism(
+    tmp_path, make_suggestion_case
+):
+    """Replay determinism must hold for Ax-native scalarization plus an
+    OutcomeConstraint too, not only for a single plain objective.
+    """
+    continuous = _run_continuous_with_metrics(
+        tmp_path / "scalarized-cont",
+        "scalarized-cont",
+        _make_scalarized_constrained_backend,
+        make_suggestion_case,
+        n_cycles=SCALARIZED_CONSTRAINT_CYCLES,
+    )
+    replayed = _run_replayed_with_metrics(
+        tmp_path / "scalarized-replay",
+        "scalarized-replay",
+        _make_scalarized_constrained_backend,
+        make_suggestion_case,
+        n_cycles=SCALARIZED_CONSTRAINT_CYCLES,
+    )
+
+    _assert_suggestions_match(
+        "scalarized-continuous",
+        "scalarized-replayed",
+        continuous,
+        replayed,
+    )
 
 
 def test_different_seeds_diverge(tmp_path):

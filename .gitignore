@@ -226,3 +226,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Figures
+*.png
+*.gif
