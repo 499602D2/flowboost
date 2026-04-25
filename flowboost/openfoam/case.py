@@ -281,7 +281,7 @@ class Case:
                 raise ValueError(
                     "method='copy' is not supported in Docker mode — use method='foamCloneCase'"
                 )
-            shutil.copytree(str(tutorial_path), str(new_case_dir))
+            shutil.copytree(str(tutorial_path), str(new_case_dir), symlinks=True)
         elif method == "foamCloneCase":
             cmd = ["foamCloneCase", tutorial_path, new_case_dir]
             run_command(cmd)
