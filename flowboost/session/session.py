@@ -284,6 +284,9 @@ class Session:
         # Template configured and dimensions OK, plus no wonky properties?
         self._verify_search_space_in_template()
 
+        # Re-apply preferences now that job_manager is guaranteed to be set
+        self._apply_backend_preferences()
+
         # Initialize the optimizer backend
         self.backend.initialize()
 
@@ -690,6 +693,8 @@ class Session:
             self.job_manager = Manager.create(
                 scheduler=scheduler, wdir=self.data_dir, job_limit=job_limit
             )
+            # Sync max_parallelism now that job_manager is restored
+            self._apply_backend_preferences()
 
         logging.info(f"Session restored from {from_file}")
         # No automatic pending case cleanup here.
@@ -697,6 +702,11 @@ class Session:
     def _apply_backend_preferences(self):
         """Apply session-level optimizer settings to the active backend when supported."""
         self.backend.random_seed = self.random_seed
+
+        # Sync BO concurrency cap with the job manager's slot limit so Ax
+        # doesn't silently starve the scheduler (DEFAULT_BO_CONCURRENCY=3).
+        if self.job_manager is not None and hasattr(self.backend, "max_parallelism"):
+            self.backend.max_parallelism = self.job_manager.job_limit
 
     def clean_pending_cases(self):
         """
