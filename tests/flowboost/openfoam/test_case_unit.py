@@ -1,11 +1,14 @@
 """Unit tests for Case state/persistence — no OpenFOAM CLI needed."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
 from flowboost.openfoam.case import Case, Status
+from flowboost.openfoam.runtime import FOAMRuntime
 
 
 @pytest.fixture
@@ -13,6 +16,36 @@ def case(tmp_path):
     d = tmp_path / "test_case"
     d.mkdir()
     return Case(d)
+
+
+class TestCaseCopy:
+    def test_from_tutorial_copy_preserves_symlinks(self, tmp_path, monkeypatch):
+        tutorial_dir = tmp_path / "tutorial"
+        tutorial_dir.mkdir()
+        (tutorial_dir / "constant").mkdir()
+        (tutorial_dir / "system").mkdir()
+        (tutorial_dir / "real_file.txt").write_text("data")
+        (tutorial_dir / "linked_file.txt").symlink_to("real_file.txt")
+
+        monkeypatch.setattr(
+            "flowboost.openfoam.case.FOAM.tutorial",
+            lambda relative_path: tutorial_dir,
+        )
+        monkeypatch.setattr(
+            "flowboost.openfoam.case.get_runtime",
+            lambda: SimpleNamespace(mode=FOAMRuntime.Mode.NATIVE),
+        )
+
+        copied_case = Case.from_tutorial(
+            "synthetic/tutorial",
+            tmp_path / "copied_tutorial",
+            method="copy",
+        )
+
+        copied_link = copied_case.path / "linked_file.txt"
+        assert copied_link.is_symlink()
+        assert copied_link.readlink() == Path("real_file.txt")
+        assert copied_link.resolve() == copied_case.path / "real_file.txt"
 
 
 class TestCaseState:

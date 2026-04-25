@@ -1,6 +1,6 @@
 [project]
 name = "flowboost"
-version = "0.3.0"
+version = "0.3.1"
 description = "Multi-objective Bayesian optimization library for OpenFOAM"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
