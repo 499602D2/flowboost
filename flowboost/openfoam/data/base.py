@@ -97,20 +97,38 @@ class Data(ABC, Generic[FrameT]):
 
         function_objects = {}
         for function_dir in filter(Path.is_dir, self.post_processing_path.iterdir()):
-            time_dirs = self._time_dirs_for_function_object(function_dir)
+            direct_outputs = self._files_by_time_directory(function_dir)
+            if direct_outputs:
+                function_objects[function_dir.name] = direct_outputs
 
-            function_objects[function_dir.name] = {
-                time_dir.name: sorted(
-                    (path for path in time_dir.iterdir() if path.is_file()),
-                    key=lambda path: path.name,
-                )
-                for time_dir in time_dirs
-            }
+            # Multi-region function objects often add one extra nesting level:
+            # postProcessing/<region>/<functionObject>/<time>/...
+            for nested_function_dir in filter(Path.is_dir, function_dir.iterdir()):
+                nested_outputs = self._files_by_time_directory(nested_function_dir)
+                if nested_outputs:
+                    function_objects[
+                        f"{function_dir.name}/{nested_function_dir.name}"
+                    ] = nested_outputs
 
         return function_objects
 
     def _time_dirs_for_function_object(self, fo_folder: Path) -> list[Path]:
         return list(filter(Path.is_dir, fo_folder.iterdir()))
+
+    def _files_by_time_directory(self, fo_folder: Path) -> dict[str, list[Path]]:
+        """Return a time->files mapping when *fo_folder* has standard output."""
+        time_dirs = self._time_dirs_for_function_object(fo_folder)
+        outputs = {
+            time_dir.name: sorted(
+                (path for path in time_dir.iterdir() if path.is_file()),
+                key=lambda path: path.name,
+            )
+            for time_dir in time_dirs
+        }
+
+        # Only treat the folder as a function-object output when at least one
+        # time directory contains files.
+        return {time: files for time, files in outputs.items() if files}
 
     # -- simple_function_object_reader ------------------------------------
 
@@ -159,6 +177,8 @@ class Data(ABC, Generic[FrameT]):
                 function_object_name,
                 at_time=at_time,
             )
+
+        function_object_name = function_object_name.strip("/")
 
         function_objects = self.discover_function_objects()
 
