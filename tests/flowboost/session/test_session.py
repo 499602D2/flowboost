@@ -1,6 +1,7 @@
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +65,64 @@ def test_session_restore_reapplies_random_seed_to_backend(tmp_path):
     assert restored.random_seed == 321
     assert hasattr(restored.backend, "random_seed")
     assert restored.backend.random_seed == 321
+
+
+def test_session_job_limit_is_applied_to_backend_parallelism_when_unset(tmp_path):
+    session = Session(
+        name="Parallelism sync",
+        data_dir=tmp_path / "parallelism_sync_session",
+    )
+
+    assert hasattr(session.backend, "max_parallelism")
+    assert session.backend.max_parallelism is None
+
+    session.job_manager = SimpleNamespace(job_limit=8)
+    session._apply_backend_preferences()
+
+    assert session.backend.max_parallelism == 8
+
+
+def test_session_persists_and_restores_bo_concurrency(tmp_path):
+    session = Session(
+        name="BO concurrency",
+        data_dir=tmp_path / "bo_concurrency_session",
+        bo_concurrency=4,
+    )
+
+    session.persist()
+    restored = Session(
+        name="ignored",
+        data_dir=session.data_dir,
+    )
+
+    assert restored.bo_concurrency == 4
+
+
+def test_session_restore_applies_scheduler_job_limit_to_backend_parallelism(
+    tmp_path, monkeypatch
+):
+    data_dir = tmp_path / "restore_parallelism_session"
+    created = Session(
+        name="Restore parallelism",
+        data_dir=data_dir,
+    )
+    created.job_manager = SimpleNamespace(type="Local", job_limit=6)
+    created.persist()
+
+    def _fake_manager_create(scheduler: str, wdir: Path, job_limit: int):
+        return SimpleNamespace(type=scheduler, job_limit=job_limit)
+
+    monkeypatch.setattr("flowboost.session.session.Manager.create", _fake_manager_create)
+
+    restored = Session(
+        name="ignored",
+        data_dir=data_dir,
+    )
+
+    assert restored.job_manager is not None
+    assert restored.job_manager.job_limit == 6
+    assert hasattr(restored.backend, "max_parallelism")
+    assert restored.backend.max_parallelism == 6
 
 
 def test_incorrect_startup():
