@@ -37,6 +37,7 @@ class Session:
         backend: str = "AxBackend",
         clone_method: Literal["foamCloneCase", "copy"] = "foamCloneCase",
         random_seed: Optional[int] = None,
+        bo_concurrency: Optional[int] = None,
         max_evaluations: Optional[int] = None,
         target_value: Optional[float] = None,
         target_objective: Optional[str] = None,
@@ -62,6 +63,10 @@ class Session:
                 session restarts. Note: this mutates ``torch``'s global RNG \
                 state, which may affect user code that depends on it in the \
                 same process. Defaults to None (non-deterministic).
+            bo_concurrency (Optional[int], optional): Maximum number of
+                Bayesian-optimization candidates to request per cycle after
+                the Sobol initialization phase. If None, no additional BO
+                cap is applied at the Session layer.
             max_evaluations (Optional[int], optional): Maximum number of attempted \
                 case evaluations before stopping optimization. Completed failed \
                 cases and pending submitted cases both count against this cap. \
@@ -79,6 +84,7 @@ class Session:
         self.dataframe_format: Literal["pandas", "polars"] = dataframe_format
         self.clone_method: Literal["foamCloneCase", "copy"] = clone_method
         self.random_seed: Optional[int] = random_seed
+        self.bo_concurrency: Optional[int] = bo_concurrency
 
         # Termination criteria
         self.max_evaluations: Optional[int] = max_evaluations
@@ -284,6 +290,10 @@ class Session:
         # Template configured and dimensions OK, plus no wonky properties?
         self._verify_search_space_in_template()
 
+        # Ensure scheduler-aware backend preferences (e.g. max_parallelism)
+        # are synchronized just before initialization.
+        self._apply_backend_preferences()
+
         # Initialize the optimizer backend
         self.backend.initialize()
 
@@ -436,6 +446,19 @@ class Session:
 
         # Attach failed cases separately
         self.backend.attach_failed_cases(self.get_failed_cases())
+
+        if self._is_bo_phase(finished_case_count=len(finished_cases)):
+            if self.bo_concurrency is not None:
+                num_new_cases = min(num_new_cases, self.bo_concurrency)
+                logging.info(
+                    "Running BO acquisition with session cap "
+                    f"bo_concurrency={self.bo_concurrency}"
+                )
+        else:
+            logging.info(
+                "Running Sobol initialization acquisition "
+                f"(finished={len(finished_cases)}/{self._num_initialization_trials()})"
+            )
 
         # Ready to get new cases
         logging.info(f"Running acquisition: manager had {num_new_cases} free slot(s)")
@@ -602,6 +625,8 @@ class Session:
         }
         if self.random_seed is not None:
             optimizer_state["random_seed"] = self.random_seed
+        if self.bo_concurrency is not None:
+            optimizer_state["bo_concurrency"] = self.bo_concurrency
 
         state = {
             "session": {
@@ -676,6 +701,7 @@ class Session:
         # [optimizer]
         backend_type = str(data.get("optimizer", {}).get("type", "Ax"))
         self.random_seed = data.get("optimizer", {}).get("random_seed")
+        self.bo_concurrency = data.get("optimizer", {}).get("bo_concurrency")
         self.backend = Backend.create(backend_type)
         self._apply_backend_preferences()
         offload = data.get("optimizer", {}).get("offload_acquisition", False)
@@ -690,6 +716,7 @@ class Session:
             self.job_manager = Manager.create(
                 scheduler=scheduler, wdir=self.data_dir, job_limit=job_limit
             )
+            self._apply_backend_preferences()
 
         logging.info(f"Session restored from {from_file}")
         # No automatic pending case cleanup here.
@@ -697,6 +724,43 @@ class Session:
     def _apply_backend_preferences(self):
         """Apply session-level optimizer settings to the active backend when supported."""
         self.backend.random_seed = self.random_seed
+
+        manager = getattr(self, "job_manager", None)
+        if manager and hasattr(self.backend, "max_parallelism"):
+            # Keep Ax generation strategy from under-utilizing scheduler slots
+            # during Sobol initialization.
+            setattr(self.backend, "max_parallelism", manager.job_limit)
+
+    def _num_initialization_trials(self) -> int:
+        trials = getattr(self.backend, "initialization_trials", None)
+        return int(trials) if trials is not None else 5
+
+    def _is_bo_phase(self, finished_case_count: int) -> bool:
+        """Detect if we're in the BO phase by checking Ax's actual trial count.
+
+        Ax transitions from Sobol to BO based on total generated trials
+        (including pending), not just finished trials. We must check Ax's
+        actual state to match its phase transitions.
+        """
+        # Check if backend is Ax and has been initialized with trials
+        if not hasattr(self.backend, "client"):
+            # Fallback: use finished case count for non-Ax backends
+            return finished_case_count >= self._num_initialization_trials()
+
+        # Check Ax's experiment trial count
+        try:
+            experiment = self.backend.client.experiment
+            if experiment is None:
+                # Experiment not yet created, still in initialization
+                return False
+
+            total_trials = len(experiment.trials)
+            init_trials = self._num_initialization_trials()
+            return total_trials >= init_trials
+        except (AttributeError, AssertionError):
+            # If we can't access Ax's state (experiment not created or other error),
+            # fall back to finished case count
+            return finished_case_count >= self._num_initialization_trials()
 
     def clean_pending_cases(self):
         """
