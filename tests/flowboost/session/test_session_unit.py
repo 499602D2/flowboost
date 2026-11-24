@@ -102,6 +102,80 @@ class TestSessionOptimizationConfiguration:
         assert session.backend.dimensions == [dimension]
 
 
+class TestSessionBOConcurrency:
+    def _patch_local_optimization_dependencies(self, session: Session, monkeypatch):
+        monkeypatch.setattr(session.backend, "tell", lambda cases: None)
+        monkeypatch.setattr(session.backend, "attach_pending_cases", lambda cases: None)
+        monkeypatch.setattr(session.backend, "attach_failed_cases", lambda cases: None)
+        monkeypatch.setattr(session, "get_pending_cases", lambda: [])
+        monkeypatch.setattr(session, "get_failed_cases", lambda: [])
+
+    def test_local_optimization_sobol_phase_uses_available_slots(
+        self, tmp_path, monkeypatch
+    ):
+        session = Session(
+            name="test",
+            data_dir=tmp_path / "session",
+            bo_concurrency=1,
+        )
+        session.backend.initialization_trials = 3
+        monkeypatch.setattr(session, "get_finished_cases", lambda batch_process=True: [])
+        self._patch_local_optimization_dependencies(session, monkeypatch)
+
+        ask = MagicMock(return_value=[])
+        monkeypatch.setattr(session.backend, "ask", ask)
+
+        session.local_optimization(num_new_cases=5)
+
+        ask.assert_called_once_with(max_cases=5)
+
+    def test_local_optimization_bo_phase_uses_bo_concurrency_cap(
+        self, tmp_path, monkeypatch
+    ):
+        session = Session(
+            name="test",
+            data_dir=tmp_path / "session",
+            bo_concurrency=2,
+        )
+        session.backend.initialization_trials = 3
+
+        completed = [MagicMock(), MagicMock(), MagicMock()]
+        monkeypatch.setattr(
+            session,
+            "get_finished_cases",
+            lambda batch_process=True: completed,
+        )
+        self._patch_local_optimization_dependencies(session, monkeypatch)
+
+        ask = MagicMock(return_value=[])
+        monkeypatch.setattr(session.backend, "ask", ask)
+
+        session.local_optimization(num_new_cases=5)
+
+        ask.assert_called_once_with(max_cases=2)
+
+    def test_local_optimization_bo_phase_without_cap_uses_available_slots(
+        self, tmp_path, monkeypatch
+    ):
+        session = Session(name="test", data_dir=tmp_path / "session")
+        session.backend.initialization_trials = 1
+
+        completed = [MagicMock()]
+        monkeypatch.setattr(
+            session,
+            "get_finished_cases",
+            lambda batch_process=True: completed,
+        )
+        self._patch_local_optimization_dependencies(session, monkeypatch)
+
+        ask = MagicMock(return_value=[])
+        monkeypatch.setattr(session.backend, "ask", ask)
+
+        session.local_optimization(num_new_cases=4)
+
+        ask.assert_called_once_with(max_cases=4)
+
+
 class TestCheckTerminationCriteria:
     def _make_session_with_cases(self, tmp_path, n_cases, **session_kwargs):
         session = Session(name="test", data_dir=tmp_path / "session", **session_kwargs)

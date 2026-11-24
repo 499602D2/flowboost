@@ -55,6 +55,7 @@ if __name__ == "__main__":
         random_seed=0,
         target_value=60.8,  # Target lift-to-drag ratio
         max_evaluations=50,
+        bo_concurrency=3
     )
 
     # --- Template case ---
@@ -106,11 +107,11 @@ if __name__ == "__main__":
     session.job_manager = session.job_manager or Manager.create(
         scheduler="Local",
         wdir=session.data_dir,
-        job_limit=2,
+        job_limit=5,
     )
     session.job_manager.monitoring_interval = 10
 
     # --- Run ---
-    session.backend.initialization_trials = 8
+    session.backend.initialization_trials = 10
     session.clean_pending_cases()
     session.start()
