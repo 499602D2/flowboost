@@ -196,3 +196,42 @@ class TestFunctionObjectDiscovery:
             {"column_1": 0.1, "column_2": 1.0},
             {"column_1": 0.2, "column_2": 2.0},
         ]
+
+    def test_discovers_multiregion_function_objects(self, tmp_path):
+        fo_file = (
+            tmp_path
+            / "postProcessing"
+            / "fluid"
+            / "cylinderT"
+            / "0"
+            / "surfaceFieldValue.dat"
+        )
+        fo_file.parent.mkdir(parents=True)
+        fo_file.write_text("# Time\tareaAverage(T)\n0.1\t297.0\n0.2\t298.0\n")
+
+        data = PolarsData(path=tmp_path)
+        discovered = data.discover_function_objects()
+
+        assert discovered["fluid/cylinderT"]["0"] == [fo_file]
+
+    def test_simple_reader_loads_multiregion_function_object(self, tmp_path):
+        fo_file = (
+            tmp_path
+            / "postProcessing"
+            / "fluid"
+            / "cylinderT"
+            / "0"
+            / "surfaceFieldValue.dat"
+        )
+        fo_file.parent.mkdir(parents=True)
+        fo_file.write_text("# Time\tareaAverage(T)\n0.1\t297.0\n0.2\t298.0\n")
+
+        data = PolarsData(path=tmp_path)
+        df = data.simple_function_object_reader("/fluid/cylinderT")
+
+        assert df is not None
+        assert df.columns == ["Time", "areaAverage(T)"]
+        assert df.to_dicts() == [
+            {"Time": 0.1, "areaAverage(T)": 297.0},
+            {"Time": 0.2, "areaAverage(T)": 298.0},
+        ]
