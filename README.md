@@ -21,6 +21,22 @@ The `examples/` directory contains code examples for simplified real-world scena
 
 By default, FlowBoost uses Ax's [Service API](https://ax.dev/) as its optimization backend. In practice, any optimizer can be used, as long as it conforms to the abstract `flowboost.optimizer.Backend` base class, which the backend interfaces in `flowboost.optimizer.interfaces` implement.
 
+### Selecting the acquisition function
+
+The Ax backend accepts an optional `acquisition` attribute (`"ei"`, `"pi"`, or
+`"ucb"`). When set, it uses an explicit BoTorch acquisition function; when
+unset, the existing Ax generation-strategy selection remains unchanged.
+
+```python
+from flowboost.optimizer.interfaces.Ax import AxBackend
+
+backend = AxBackend()
+backend.acquisition = "pi"  # or "ei" / "ucb"
+```
+
+See [`examples/six_hump_camel.py`](examples/six_hump_camel.py) for a
+non-OpenFOAM benchmark comparing the three acquisition functions.
+
 ## OpenFOAM case abstraction
 Working with OpenFOAM cases is performed through the `flowboost.Case` abstraction, which provides a high-level API for OpenFOAM case-data and configuration access. The `Case` abstraction can be used as-is outside of optimization workflows:
 

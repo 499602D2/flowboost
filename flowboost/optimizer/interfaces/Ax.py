@@ -5,11 +5,9 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 import torch
+from ax.adapter.registry import Generators
 from ax.core.arm import Arm
 from ax.core.base_trial import BaseTrial
-from ax.exceptions.core import DataRequiredError
-from ax.service.ax_client import AxClient, ObjectiveProperties, TParameterization
-
 from ax.core.metric import Metric
 from ax.core.objective import MultiObjective as AxMultiObjective
 from ax.core.objective import ScalarizedObjective as AxScalarizedObjective
@@ -22,6 +20,20 @@ from ax.core.outcome_constraint import (
     OutcomeConstraint,
 )
 from ax.core.types import ComparisonOp
+from ax.exceptions.core import DataRequiredError
+from ax.generation_strategy.generation_node import GenerationNode
+from ax.generation_strategy.generation_strategy import GenerationStrategy
+from ax.generation_strategy.generator_spec import GeneratorSpec
+from ax.generation_strategy.transition_criterion import (
+    MaxGenerationParallelism,
+    MinTrials,
+)
+from ax.service.ax_client import AxClient, ObjectiveProperties, TParameterization
+from botorch.acquisition import (
+    qExpectedImprovement,
+    qProbabilityOfImprovement,
+    qUpperConfidenceBound,
+)
 
 from flowboost.openfoam.case import Case
 from flowboost.optimizer.backend import Backend, OptimizationComplete
@@ -56,6 +68,7 @@ class AxBackend(Backend):
         self.initialization_trials: Optional[int] = None
         self.random_seed: Optional[int] = None
         self.should_deduplicate: bool = True
+        self.acquisition: str | None = None
 
         # Ax-specific constraints
         self._parameter_constraints: list[str] = []
@@ -99,11 +112,15 @@ class AxBackend(Backend):
         # passed via the string-DSL kwarg here — they're installed structurally
         # by `_install_optimization_config_overrides` once the experiment exists,
         # so the metric references stay typed (vs. parsed from strings).
-        self.client.create_experiment(
-            parameters=self._get_ax_search_space(),
-            objectives=self._get_ax_objectives(),
-            parameter_constraints=self._parameter_constraints,
-            choose_generation_strategy_kwargs={
+        if self.acquisition is not None:
+            self.client = AxClient(
+                generation_strategy=self._build_generation_strategy(
+                    num_init, max_parallelism_override
+                )
+            )
+            gs_kwargs = None
+        else:
+            gs_kwargs = {
                 "num_initialization_trials": num_init,
                 "use_saasbo": self.SAASBO,
                 "disable_progbar": False,
@@ -117,7 +134,13 @@ class AxBackend(Backend):
                 # `max_parallelism_override`, and flowboost's Manager caps
                 # total in-flight jobs externally.
                 "enforce_sequential_optimization": False,
-            },
+            }
+
+        self.client.create_experiment(
+            parameters=self._get_ax_search_space(),
+            objectives=self._get_ax_objectives(),
+            parameter_constraints=self._parameter_constraints,
+            choose_generation_strategy_kwargs=gs_kwargs,
         )
 
         self._install_optimization_config_overrides()
@@ -810,3 +833,66 @@ class AxBackend(Backend):
 
     def _get_ax_search_space(self):
         return [self._dim_to_Ax_parameter_dict(d) for d in self.dimensions]
+
+    def _build_generation_strategy(
+        self, num_init: int, max_parallelism: int | None = None
+    ) -> GenerationStrategy:
+        """Build a generation strategy with an explicit BoTorch acquisition."""
+        acquisition = self.acquisition
+        acqf_map = {
+            "ei": qExpectedImprovement,
+            "pi": qProbabilityOfImprovement,
+            "ucb": qUpperConfidenceBound,
+        }
+        if acquisition is None or acquisition not in acqf_map:
+            raise ValueError(
+                f"acquisition must be one of {list(acqf_map)}, got {acquisition!r}"
+            )
+
+        if max_parallelism is None:
+            max_parallelism = (
+                self.max_parallelism
+                if self.max_parallelism is not None
+                else DEFAULT_BO_CONCURRENCY
+            )
+        pausing_criteria = (
+            []
+            if max_parallelism < 0
+            else [MaxGenerationParallelism(threshold=max_parallelism)]
+        )
+        botorch_node = GenerationNode(
+            name=f"BoTorch-{acquisition.upper()}",
+            generator_specs=[
+                GeneratorSpec(
+                    generator_enum=Generators.BOTORCH_MODULAR,
+                    generator_kwargs={"botorch_acqf_class": acqf_map[acquisition]},
+                )
+            ],
+            pausing_criteria=pausing_criteria,
+            should_deduplicate=self.should_deduplicate,
+        )
+        sobol_kwargs = (
+            {"seed": self.random_seed} if self.random_seed is not None else {}
+        )
+        sobol_node = GenerationNode(
+            name="Sobol",
+            generator_specs=[
+                GeneratorSpec(
+                    generator_enum=Generators.SOBOL,
+                    generator_kwargs=sobol_kwargs,
+                )
+            ],
+            transition_criteria=[
+                MinTrials(
+                    threshold=num_init,
+                    transition_to=botorch_node.name,
+                    use_all_trials_in_exp=True,
+                )
+            ],
+            pausing_criteria=pausing_criteria,
+            should_deduplicate=self.should_deduplicate,
+        )
+        return GenerationStrategy(
+            name=f"Sobol+{acquisition.upper()}",
+            nodes=[sobol_node, botorch_node],
+        )
